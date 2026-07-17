@@ -1,0 +1,1095 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MXL Merge Resolver</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #647086;
+      --line: #dce2ec;
+      --panel: #ffffff;
+      --canvas: #f4f6fa;
+      --accent: #2563eb;
+      --accent-soft: #e8f0ff;
+      --good: #0f8a58;
+      --good-soft: #e8f7f0;
+      --warn: #b35b00;
+      --warn-soft: #fff4e5;
+      --danger: #bd2939;
+      --local: #2563eb;
+      --remote: #0f9f6e;
+      --both: #7c3aed;
+      --structural: #d97706;
+      --shadow: 0 12px 32px rgba(26, 40, 72, 0.10);
+      --topbar-height: 42px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--canvas);
+      color: var(--ink);
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, textarea { font: inherit; }
+    button { cursor: pointer; }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      height: var(--topbar-height);
+      padding: 5px 10px;
+      color: var(--ink);
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, .96);
+      box-shadow: 0 4px 14px rgba(26, 40, 72, .09);
+      backdrop-filter: blur(12px);
+    }
+    .brand { display: flex; align-items: center; flex: 0 0 auto; }
+    h1 { margin: 0; font-size: 13px; white-space: nowrap; }
+    .header-tools { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; min-width: max-content; margin-left: auto; }
+    .conflict-nav { display: flex; align-items: center; overflow: hidden; border: 1px solid #cbd3df; border-radius: 7px; background: #fff; }
+    .conflict-nav button { width: 28px; height: 28px; border: 0; color: #334a78; background: transparent; font-size: 17px; }
+    .conflict-nav button:hover { background: var(--accent-soft); }
+    .conflict-nav button:disabled { cursor: default; opacity: .35; }
+    .conflict-position { min-width: 44px; color: var(--muted); font-size: 11px; text-align: center; }
+    .actions { display: flex; gap: 6px; align-items: center; }
+    .button {
+      border: 1px solid transparent;
+      border-radius: 7px;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 650;
+      transition: 120ms ease;
+    }
+    .button:hover { transform: translateY(-1px); }
+    .button.primary { color: #fff; background: var(--accent); }
+    .button.secondary { color: var(--muted); border-color: #cbd3df; background: #fff; }
+    .button.ghost { color: var(--accent); background: var(--accent-soft); }
+    .button:disabled { cursor: not-allowed; opacity: .45; transform: none; }
+
+    main { max-width: 1900px; margin: 0 auto; padding: 8px; }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    code { overflow: hidden; color: #26334a; text-overflow: ellipsis; white-space: nowrap; }
+
+    .section-title { display: flex; justify-content: space-between; align-items: center; margin: 14px 2px 7px; }
+    .section-title h2 { margin: 0; font-size: 14px; }
+    .section-title p { margin: 1px 0 0; color: var(--muted); font-size: 11px; }
+    .bulk-actions { display: flex; gap: 8px; }
+
+    #conflicts { display: grid; gap: 8px; }
+    .conflict-card { display: grid; grid-template-columns: minmax(0, 3fr) minmax(220px, 1fr); overflow: hidden; }
+    .conflict-head {
+      grid-column: 1 / -1;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 7px 10px;
+      border-bottom: 1px solid var(--line);
+      background: #fafbfc;
+    }
+    .conflict-number { font-size: 12px; font-weight: 750; }
+    .choices { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .conflict-card.has-manual .choices { grid-column: 1; }
+    .choice {
+      min-height: 62px;
+      padding: 7px 9px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: #fff;
+      text-align: left;
+    }
+    .choice:last-child { border-right: 0; }
+    .choice:hover { background: #f7f9fd; }
+    .choice.selected { position: relative; background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
+    .choice-label { display: flex; align-items: center; gap: 5px; margin-bottom: 3px; color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .choice-value { overflow-wrap: anywhere; font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+    .manual { grid-column: 2; display: flex; align-items: stretch; padding: 7px 9px; border-left: 1px solid var(--line); background: #fafbfc; }
+    .manual.selected { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
+    .manual textarea { width: 100%; min-height: 48px; resize: vertical; border: 1px solid #cbd3df; border-radius: 7px; padding: 7px; background: #fff; font-size: 12px; }
+    .manual.selected textarea { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(37, 99, 235, .16); }
+    .manual textarea:focus { outline: 2px solid #9ab9fa; border-color: var(--accent); }
+    .resolved-badge { color: var(--good); font-size: 12px; font-weight: 750; }
+    .conflict-context { grid-column: 1 / -1; border-bottom: 1px solid var(--line); padding: 5px 10px; color: var(--muted); background: #fcfdff; font-size: 10px; }
+    .conflict-context summary { cursor: pointer; font-weight: 700; }
+    .conflict-context div { margin-top: 5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    .preview-workspace { display: grid; grid-template-rows: repeat(2, minmax(0, 1fr)); height: calc(100dvh - var(--topbar-height) - 16px); overflow: hidden; }
+    .document-preview { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; overflow: hidden; }
+    .document-preview-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 32px; padding: 4px 10px; border-bottom: 1px solid var(--line); }
+    .document-preview-head h2 { margin: 0; font-size: 12px; }
+    .document-preview-head p { display: none; }
+    .preview-tools { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+    .view-switch { display: flex; overflow: hidden; border: 1px solid #cbd3df; border-radius: 7px; background: #fff; }
+    .view-switch button { border: 0; border-right: 1px solid #dce2ec; padding: 5px 8px; color: var(--muted); background: transparent; font-size: 11px; font-weight: 700; }
+    .view-switch button:last-child { border-right: 0; }
+    .view-switch button.selected { color: #fff; background: #334a78; }
+    .dim-toggle { border: 1px solid #cbd3df; border-radius: 7px; padding: 5px 8px; color: var(--muted); background: #fff; font-size: 11px; font-weight: 700; }
+    .dim-toggle.selected { color: #fff; border-color: #334a78; background: #334a78; }
+    .dim-toggle:disabled { cursor: default; opacity: .45; }
+    .zoom-control { display: flex; align-items: stretch; overflow: hidden; border: 1px solid #cbd3df; border-radius: 7px; background: #fff; }
+    .zoom-control button { min-width: 28px; border: 0; border-right: 1px solid #dce2ec; padding: 4px 7px; color: #334a78; background: #fff; font-size: 11px; font-weight: 800; }
+    .zoom-control button:last-child { border-right: 0; }
+    .zoom-control button:hover { background: var(--accent-soft); }
+    .zoom-control .zoom-value { min-width: 54px; color: var(--muted); font-size: 11px; }
+    .preview-legend { display: flex; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 10px; }
+    .legend-item { display: flex; align-items: center; gap: 4px; }
+    .legend-dot { width: 9px; height: 9px; border: 2px solid currentColor; border-radius: 3px; }
+    .legend-conflict { color: var(--danger); }
+    .legend-local { color: var(--local); }
+    .legend-remote { color: var(--remote); }
+    .legend-both { color: var(--both); }
+    #renderedPreviews, .rendered-grid { min-height: 0; height: 100%; }
+    .rendered-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .rendered-pane { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
+    .rendered-pane:last-child { border-right: 0; }
+    .rendered-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; color: var(--muted); background: #fafbfc; border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 800; text-transform: uppercase; }
+    .use-document { border: 1px solid #c8d2e3; border-radius: 7px; padding: 3px 7px; color: var(--accent); background: #fff; font-size: 10px; font-weight: 800; text-transform: none; }
+    .rendered-pane iframe { display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: #fff; }
+    .preview-unavailable { padding: 24px; color: var(--muted); text-align: center; }
+    .preview-error { margin-top: 8px; color: var(--danger); font-size: 12px; }
+
+    .result-preview { display: grid; grid-template-rows: auto minmax(0, 1fr); min-height: 0; overflow: hidden; border-top: 1px solid var(--line); }
+    .result-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 36px; padding: 4px 10px; border-bottom: 1px solid var(--line); }
+    .result-preview-head h2 { margin: 0; font-size: 12px; }
+    .result-preview-head p { display: none; }
+    .result-head-actions { display: flex; align-items: center; gap: 8px; }
+    .result-state-text { min-width: 0; color: var(--muted); font-size: 11px; }
+    .exact-button { border: 1px solid #c8d2e3; border-radius: 7px; padding: 5px 9px; color: var(--accent); background: #fff; font-size: 11px; font-weight: 750; }
+    .exact-button:disabled { cursor: default; opacity: .45; }
+    .result-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 28%); min-height: 0; }
+    .result-frame-wrap { position: relative; min-height: 0; background: #fff; }
+    #resultFrame { display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: #fff; }
+    .result-overlay { position: absolute; inset: 0; display: none; place-items: center; padding: 30px; color: #8a5a16; background: rgba(255, 248, 235, .86); text-align: center; font-weight: 750; pointer-events: none; }
+    .result-overlay.visible { display: grid; }
+    .source-picker { min-height: 0; overflow: auto; padding: 8px; border-left: 1px solid var(--line); background: #fafbfc; }
+    .source-picker-empty { color: var(--muted); }
+    .source-picker-title { margin-bottom: 6px; font-size: 12px; font-weight: 750; }
+    .source-picker-choices { display: grid; grid-template-columns: 1fr; gap: 4px; }
+    .source-picker-choice { display: grid; grid-template-columns: 54px minmax(0, 1fr); align-items: center; gap: 6px; overflow: hidden; border: 1px solid #cbd3df; border-radius: 8px; padding: 6px 8px; color: var(--ink); background: #fff; text-align: left; }
+    .source-picker-choice:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .source-picker-choice.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-soft); }
+    .source-picker-side { display: block; color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .source-picker-value { display: block; overflow: hidden; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .picker-manual { display: grid; gap: 4px; margin-top: 6px; border: 2px solid transparent; border-radius: 9px; padding: 5px; }
+    .picker-manual.selected { border-color: var(--accent); background: var(--accent-soft); }
+    .picker-manual label { color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .picker-manual textarea { min-height: 48px; resize: vertical; border: 1px solid #cbd3df; border-radius: 7px; padding: 7px; background: #fff; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .picker-manual textarea:focus { outline: 2px solid #9ab9fa; border-color: var(--accent); }
+
+    details.preview { margin-top: 22px; overflow: hidden; }
+    details.preview summary { cursor: pointer; padding: 15px 18px; font-weight: 750; }
+    .semantic-meta { padding: 0 18px 12px; color: var(--muted); font-size: 12px; }
+    .semantic-scroll { max-height: 560px; overflow: auto; border-top: 1px solid var(--line); }
+    .semantic-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .semantic-table th { position: sticky; top: 0; z-index: 2; padding: 9px 12px; color: var(--muted); background: #f7f9fc; border-bottom: 1px solid var(--line); text-align: left; }
+    .semantic-table td { padding: 7px 12px; border-right: 1px solid #edf0f5; border-bottom: 1px solid #edf0f5; overflow-wrap: anywhere; vertical-align: top; white-space: pre-wrap; }
+    .semantic-table td:last-child { border-right: 0; }
+    .semantic-table tr.state-conflict td, .semantic-table tr.state-insert-conflict td, .semantic-table tr.state-delete-conflict td { background: #fff0f1; }
+    .semantic-table tr.state-local td:nth-child(2), .semantic-table tr.state-remote td:nth-child(3) { background: var(--accent-soft); }
+    .semantic-table tr.state-insert td { background: var(--good-soft); }
+    .semantic-table tr.state-delete td { background: var(--warn-soft); }
+    .semantic-empty { color: #a1a9b8; font-style: italic; }
+
+    .empty { padding: 34px; text-align: center; color: var(--muted); }
+    .toast { position: fixed; right: 22px; bottom: 22px; max-width: 460px; padding: 13px 16px; border-radius: 10px; color: #fff; background: #1d2a43; box-shadow: var(--shadow); opacity: 0; transform: translateY(8px); pointer-events: none; transition: 160ms ease; }
+    .toast.visible { opacity: 1; transform: translateY(0); }
+    .toast.error { background: var(--danger); }
+    .conflict-card.active-conflict-card { border-color: #111827; box-shadow: 0 0 0 3px #facc15, var(--shadow); }
+    body.session-ended main { opacity: .7; pointer-events: none; }
+
+    @media (max-width: 900px) {
+      .preview-workspace { display: block; height: auto; }
+      .conflict-card { grid-template-columns: 1fr; }
+      .conflict-card.has-manual .choices, .manual { grid-column: 1; }
+      .manual { border-top: 1px solid var(--line); border-left: 0; }
+      .choices, .rendered-grid { grid-template-columns: 1fr; }
+      .source-picker-choices { grid-template-columns: 1fr; }
+      .choice, .rendered-pane { border-right: 0; border-bottom: 1px solid var(--line); }
+      .rendered-pane iframe, #resultFrame { height: 42vh; min-height: 240px; }
+      .result-body { grid-template-columns: 1fr; }
+      .source-picker { min-height: auto; max-height: none; border-top: 1px solid var(--line); border-left: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1 id="documentTitle">MXL merge</h1>
+    </div>
+    <div class="header-tools">
+      <div class="conflict-nav" aria-label="Conflict navigation">
+        <button type="button" id="previousConflict" title="Previous conflict">‹</button>
+        <span class="conflict-position" id="conflictPosition">0 / 0</span>
+        <button type="button" id="nextConflict" title="Next conflict">›</button>
+      </div>
+      <div class="preview-tools">
+        <div class="view-switch" id="viewSwitch">
+          <button type="button" data-view-mode="full">Full</button>
+          <button type="button" data-view-mode="changes" class="selected">Changes</button>
+          <button type="button" data-view-mode="conflicts">Conflicts</button>
+        </div>
+        <button type="button" class="dim-toggle selected" id="dimToggle" aria-pressed="true" title="Dim unchanged document content">Dim</button>
+        <div class="zoom-control" aria-label="Preview zoom">
+          <button type="button" id="zoomOut" title="Zoom out">−</button>
+          <button type="button" class="zoom-value" id="zoomReset" title="Reset zoom">100%</button>
+          <button type="button" id="zoomIn" title="Zoom in">+</button>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="button secondary" id="cancelButton">Cancel</button>
+        <button class="button primary" id="saveButton">Save</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="card preview-workspace">
+      <div class="document-preview">
+        <div class="document-preview-head">
+          <div><h2>Sources</h2><p>Base, Local, and Remote</p></div>
+          <div class="preview-legend">
+            <span class="legend-item legend-conflict"><i class="legend-dot"></i>Conflict</span>
+            <span class="legend-item legend-local"><i class="legend-dot"></i>Local</span>
+            <span class="legend-item legend-remote"><i class="legend-dot"></i>Remote</span>
+            <span class="legend-item legend-both"><i class="legend-dot"></i>Both</span>
+          </div>
+        </div>
+        <div id="renderedPreviews"></div>
+      </div>
+
+      <div class="result-preview">
+        <div class="result-preview-head">
+          <div><h2>Merged result</h2><p>Click an unresolved field and choose Base, Local, Remote, or Manual.</p></div>
+          <div class="result-head-actions">
+            <span class="result-state-text" id="resultStatus" aria-live="polite"></span>
+            <button type="button" class="exact-button" id="refreshExactButton">Render exact</button>
+          </div>
+        </div>
+        <div class="result-body">
+          <div class="result-frame-wrap">
+            <iframe id="resultFrame" title="Merged MXL preview" sandbox="allow-same-origin"></iframe>
+            <div class="result-overlay" id="resultOverlay"></div>
+          </div>
+          <div class="source-picker" id="sourcePicker"><div class="source-picker-empty">Click a highlighted field or use ‹ › to navigate conflicts.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-title">
+      <div><h2>Conflict decisions</h2><p>Choose a side for every conflict. Non-overlapping changes are merged automatically.</p></div>
+      <div class="bulk-actions">
+        <button class="button ghost" data-all="local">All local</button>
+        <button class="button ghost" data-all="remote">All remote</button>
+      </div>
+    </div>
+    <section id="conflicts"></section>
+
+    <details class="card preview">
+      <summary>Built-in semantic alignment</summary>
+      <div class="semantic-meta" id="semanticMeta"></div>
+      <div class="semantic-scroll"><table class="semantic-table"><thead><tr><th>BASE</th><th>LOCAL</th><th>REMOTE</th></tr></thead><tbody id="semanticRows"></tbody></table></div>
+    </details>
+  </main>
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const model = __MXL_MODEL__;
+    const token = __MXL_TOKEN__;
+    const apiBase = `/api/${token}`;
+    const resolutions = {};
+    const semanticRows = model.previews.semantic.rows;
+    const conflictByKey = Object.fromEntries(model.conflicts.map(conflict => [conflict.key, conflict]));
+    const sourceFrames = {};
+    const sourceElements = {base: new Map(), local: new Map(), remote: new Map()};
+    const resultElements = new Map();
+    const conflictKeys = model.conflicts.map(conflict => conflict.key);
+    const exactPreviewAvailable = Boolean(model.previews.rendered.provider && model.previews.rendered.available.length === 3);
+    let viewMode = "changes";
+    let dimUnchanged = true;
+    let activeConflictKey = null;
+    let activeConflictIndex = -1;
+    let exactPreviewGeneration = 0;
+    let previewZoom = 1;
+    let sessionEnded = false;
+
+    const escapeText = value => value === undefined || value === null ? "" : String(value);
+    const conflictsNode = document.getElementById("conflicts");
+    const saveButton = document.getElementById("saveButton");
+    const cancelButton = document.getElementById("cancelButton");
+    const toast = document.getElementById("toast");
+
+    function showToast(message, error = false) {
+      toast.textContent = message;
+      toast.className = `toast visible${error ? " error" : ""}`;
+      setTimeout(() => toast.className = "toast", 3200);
+    }
+
+    function selectedCount() {
+      return model.conflicts.filter(conflict => resolutions[conflict.key]).length;
+    }
+
+    function updateProgress() {
+      const total = model.conflicts.length;
+      const selected = selectedCount();
+      const complete = total === 0 || selected === total;
+      saveButton.disabled = sessionEnded || !complete;
+      const exactButton = document.getElementById("refreshExactButton");
+      exactButton.disabled = sessionEnded || !complete || !exactPreviewAvailable;
+    }
+
+    function allConflictsResolved() {
+      return model.conflicts.every(conflict => resolutions[conflict.key]);
+    }
+
+    function normalizeFieldText(value) {
+      return escapeText(value).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+    }
+
+    function frameContentElements(doc) {
+      const preferred = Array.from(doc.querySelectorAll("td, th"));
+      const fallback = Array.from(doc.body?.querySelectorAll("div, span, p, font") || []).filter(node =>
+        !node.closest("td, th") &&
+        !Array.from(node.children).some(child => normalizeFieldText(child.innerText || child.textContent))
+      );
+      const elements = preferred.length ? preferred.concat(fallback) : fallback;
+      return elements.filter(node => normalizeFieldText(node.innerText || node.textContent));
+    }
+
+    function installFrameStyles(doc) {
+      if (doc.getElementById("mxl-merge-highlight-style")) return;
+      const style = doc.createElement("style");
+      style.id = "mxl-merge-highlight-style";
+      style.textContent = `
+        .mxl-content { transition: opacity 120ms ease, filter 120ms ease, box-shadow 120ms ease; }
+        html[data-mxl-dim="on"][data-mxl-mode="changes"]::after, html[data-mxl-dim="on"][data-mxl-mode="conflicts"]::after { content: ""; position: fixed; inset: 0; z-index: 2147483000; pointer-events: none; background: rgba(15, 23, 42, .48); }
+        html[data-mxl-dim="on"][data-mxl-mode="conflicts"]::after { background: rgba(15, 23, 42, .58); }
+        html[data-mxl-dim="on"][data-mxl-mode="changes"] .mxl-content:not(.mxl-change) { opacity: .72 !important; filter: grayscale(1); }
+        html[data-mxl-dim="on"][data-mxl-mode="conflicts"] .mxl-content:not(.mxl-conflict) { opacity: .58 !important; filter: grayscale(1); }
+        .mxl-change { --mxl-color: #d97706; position: relative !important; z-index: 2147483001 !important; opacity: 1 !important; outline: 2px solid var(--mxl-color) !important; outline-offset: -2px; background-color: #fff !important; }
+        html[data-mxl-mode="conflicts"] .mxl-change:not(.mxl-conflict) { z-index: auto !important; outline-color: transparent !important; }
+        .mxl-state-local { --mxl-color: #2563eb; }
+        .mxl-state-remote { --mxl-color: #0f9f6e; }
+        .mxl-state-both { --mxl-color: #7c3aed; }
+        .mxl-state-conflict, .mxl-state-insert-conflict, .mxl-state-delete-conflict { --mxl-color: #bd2939; }
+        .mxl-state-insert, .mxl-state-delete { --mxl-color: #d97706; }
+        .mxl-clickable { cursor: pointer !important; }
+        .mxl-clickable:hover { box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--mxl-color), white 35%) !important; }
+        .mxl-selected-source { box-shadow: inset 0 0 0 3px var(--mxl-color) !important; }
+        .mxl-active-conflict { z-index: 2147483002 !important; outline: 4px solid #facc15 !important; outline-offset: -4px !important; box-shadow: 0 0 0 3px #111827, 0 0 0 7px rgba(250, 204, 21, .55), inset 0 0 0 2px #111827 !important; filter: none !important; opacity: 1 !important; }
+        .mxl-unresolved { min-width: 88px !important; min-height: 24px !important; cursor: pointer !important; background: repeating-linear-gradient(135deg, #fff1f2, #fff1f2 7px, #ffe3e6 7px, #ffe3e6 14px) !important; }
+        .mxl-unresolved::after { content: attr(data-mxl-placeholder); display: inline-block; padding: 3px 6px; color: #9f2434; font: 11px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; white-space: nowrap; }
+      `;
+      (doc.head || doc.documentElement).append(style);
+    }
+
+    function findFieldElement(elements, value, used, occurrence = 0) {
+      const expected = normalizeFieldText(value);
+      if (!expected) return null;
+      const matches = elements.filter(candidate =>
+        normalizeFieldText(candidate.innerText || candidate.textContent) === expected
+      );
+      const element = (!used.has(matches[occurrence]) && matches[occurrence]) ||
+        matches.find(candidate => !used.has(candidate));
+      if (element) used.add(element);
+      return element || null;
+    }
+
+    function rowOccurrence(row, side, valueResolver = item => item[side]) {
+      const expected = normalizeFieldText(valueResolver(row));
+      let occurrence = 0;
+      for (const candidate of semanticRows) {
+        if (candidate.id === row.id) break;
+        if (normalizeFieldText(valueResolver(candidate)) === expected) occurrence += 1;
+      }
+      return occurrence;
+    }
+
+    function markElement(element, row) {
+      element.classList.add("mxl-content", "mxl-change", `mxl-state-${row.state}`);
+      if (row.conflict_key) element.classList.add("mxl-conflict", "mxl-clickable");
+      element.dataset.mxlField = row.id;
+    }
+
+    function applyFrameViewState(doc) {
+      if (!doc?.documentElement) return;
+      doc.documentElement.dataset.mxlMode = viewMode;
+      doc.documentElement.dataset.mxlDim = dimUnchanged ? "on" : "off";
+      doc.documentElement.style.zoom = String(previewZoom);
+    }
+
+    function updateZoom() {
+      Object.values(sourceFrames).forEach(frame => {
+        try { applyFrameViewState(frame.contentDocument); } catch (_) {}
+      });
+      const resultFrame = document.getElementById("resultFrame");
+      try { applyFrameViewState(resultFrame.contentDocument); } catch (_) {}
+      document.getElementById("zoomReset").textContent = `${Math.round(previewZoom * 100)}%`;
+      document.getElementById("zoomOut").disabled = previewZoom <= .5;
+      document.getElementById("zoomIn").disabled = previewZoom >= 2;
+    }
+
+    function changeZoom(delta) {
+      previewZoom = Math.min(2, Math.max(.5, Math.round((previewZoom + delta) * 10) / 10));
+      updateZoom();
+    }
+
+    function applyViewMode() {
+      Object.values(sourceFrames).forEach(frame => {
+        try { applyFrameViewState(frame.contentDocument); } catch (_) {}
+      });
+      const resultFrame = document.getElementById("resultFrame");
+      try { applyFrameViewState(resultFrame.contentDocument); } catch (_) {}
+      document.querySelectorAll("[data-view-mode]").forEach(button => {
+        button.classList.toggle("selected", button.dataset.viewMode === viewMode);
+      });
+      const dimToggle = document.getElementById("dimToggle");
+      dimToggle.classList.toggle("selected", dimUnchanged);
+      dimToggle.setAttribute("aria-pressed", String(dimUnchanged));
+      dimToggle.disabled = viewMode === "full";
+    }
+
+    function updateSourceSelections() {
+      Object.entries(sourceElements).forEach(([side, elements]) => {
+        elements.forEach((element, fieldId) => {
+          const row = semanticRows.find(item => item.id === fieldId);
+          const resolution = row?.conflict_key ? resolutions[row.conflict_key] : null;
+          element.classList.toggle("mxl-selected-source", resolution?.choice === side);
+        });
+      });
+    }
+
+    function updateConflictNavigation() {
+      const total = conflictKeys.length;
+      const current = activeConflictIndex >= 0 ? activeConflictIndex + 1 : 0;
+      document.getElementById("conflictPosition").textContent = `${current} / ${total}`;
+      document.getElementById("previousConflict").disabled = total === 0;
+      document.getElementById("nextConflict").disabled = total === 0;
+    }
+
+    function scrollFrameElementIntoView(element) {
+      const doc = element?.ownerDocument;
+      const root = doc?.documentElement;
+      const scroller = doc?.scrollingElement || root;
+      if (!root || !scroller) return;
+      const rect = element.getBoundingClientRect();
+      const left = scroller.scrollLeft + rect.left - Math.max(0, (root.clientWidth - rect.width) / 2);
+      const top = scroller.scrollTop + rect.top - Math.max(0, (root.clientHeight - rect.height) / 2);
+      scroller.scrollLeft = Math.max(0, left);
+      scroller.scrollTop = Math.max(0, top);
+    }
+
+    function highlightActiveConflict(conflict, focusSources = false) {
+      Object.values(sourceElements).forEach(elements => {
+        elements.forEach(element => element.classList.remove("mxl-active-conflict"));
+      });
+      resultElements.forEach(element => element.classList.remove("mxl-active-conflict"));
+      if (!conflict?.field_id) {
+        if (focusSources && conflict) {
+          document.querySelector(`[data-key="${CSS.escape(conflict.key)}"]`)?.scrollIntoView({behavior: "smooth", block: "center"});
+        }
+        return;
+      }
+      const sourceTargets = [];
+      Object.values(sourceElements).forEach(elements => {
+        const element = elements.get(conflict.field_id);
+        if (element) sourceTargets.push(element);
+      });
+      const resultElement = resultElements.get(conflict.field_id);
+      [...sourceTargets, resultElement].filter(Boolean).forEach(element => element.classList.add("mxl-active-conflict"));
+      if (focusSources) {
+        sourceTargets.forEach(scrollFrameElementIntoView);
+        scrollFrameElementIntoView(resultElement);
+      }
+    }
+
+    function navigateConflict(delta) {
+      if (!conflictKeys.length) return;
+      activeConflictIndex = activeConflictIndex < 0
+        ? (delta > 0 ? 0 : conflictKeys.length - 1)
+        : (activeConflictIndex + delta + conflictKeys.length) % conflictKeys.length;
+      showFieldPicker(conflictKeys[activeConflictIndex], true);
+    }
+
+    function showFieldPicker(conflictKey, focusSources = false) {
+      activeConflictKey = conflictKey;
+      const picker = document.getElementById("sourcePicker");
+      const conflict = conflictByKey[conflictKey];
+      activeConflictIndex = conflict ? conflictKeys.indexOf(conflictKey) : -1;
+      document.querySelectorAll(".conflict-card").forEach(card => {
+        card.classList.toggle("active-conflict-card", card.dataset.key === conflictKey);
+      });
+      updateConflictNavigation();
+      highlightActiveConflict(conflict, focusSources);
+      picker.replaceChildren();
+      picker.scrollTop = 0;
+      if (!conflict) {
+        const text = document.createElement("div");
+        text.className = "source-picker-empty";
+        text.textContent = "This field is an automatic non-overlapping change; no decision is required.";
+        picker.append(text);
+        return;
+      }
+      const title = document.createElement("div");
+      title.className = "source-picker-title";
+      title.textContent = conflict.kind === "structural"
+        ? "Structural conflict · choose the complete source document"
+        : `Conflict field · token ${conflict.token_index}`;
+      const choices = document.createElement("div");
+      choices.className = "source-picker-choices";
+      ["base", "local", "remote"].forEach(side => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "source-picker-choice";
+        button.classList.toggle("selected", resolutions[conflictKey]?.choice === side);
+        const sideNode = document.createElement("span");
+        sideNode.className = "source-picker-side";
+        sideNode.textContent = side;
+        const valueNode = document.createElement("span");
+        valueNode.className = "source-picker-value";
+        valueNode.textContent = conflict.kind === "structural"
+          ? `${conflict[`${side}_token_count`]} tokens`
+          : escapeText(conflict[side]);
+        button.append(sideNode, valueNode);
+        button.addEventListener("click", () => choose(conflictKey, side));
+        choices.append(button);
+      });
+      picker.append(title, choices);
+      if (conflict.manual_allowed && conflict.kind !== "structural") {
+        const manual = document.createElement("div");
+        manual.className = "picker-manual";
+        manual.classList.toggle("selected", resolutions[conflictKey]?.choice === "manual");
+        const label = document.createElement("label");
+        label.textContent = "Manual value";
+        const textarea = document.createElement("textarea");
+        textarea.dataset.manualKey = conflictKey;
+        textarea.placeholder = "Enter merged value";
+        textarea.value = resolutions[conflictKey]?.choice === "manual"
+          ? escapeText(resolutions[conflictKey].value)
+          : "";
+        textarea.addEventListener("focus", () => choose(conflictKey, "manual", textarea.value));
+        textarea.addEventListener("input", () => choose(conflictKey, "manual", textarea.value));
+        manual.append(label, textarea);
+        picker.append(manual);
+      }
+    }
+
+    function decorateSourceFrame(side, frame) {
+      const doc = frame.contentDocument;
+      if (!doc?.body) return;
+      installFrameStyles(doc);
+      const elements = frameContentElements(doc);
+      elements.forEach(element => element.classList.add("mxl-content"));
+      const used = new Set();
+      semanticRows.filter(row => row.state !== "unchanged").forEach(row => {
+        const element = findFieldElement(
+          elements,
+          row[side],
+          used,
+          rowOccurrence(row, side)
+        );
+        if (!element) return;
+        markElement(element, row);
+        sourceElements[side].set(row.id, element);
+        element.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          if (row.conflict_key) {
+            showFieldPicker(row.conflict_key);
+            choose(row.conflict_key, side);
+          } else {
+            showFieldPicker("");
+          }
+        });
+      });
+      applyFrameViewState(doc);
+      updateSourceSelections();
+      highlightActiveConflict(conflictByKey[activeConflictKey]);
+    }
+
+    function automaticRowValue(row) {
+      if (row.local === row.remote) return row.local;
+      if (row.local === row.base) return row.remote;
+      if (row.remote === row.base) return row.local;
+      if (row.base === null || row.base === undefined) return row.local ?? row.remote;
+      return row.local ?? row.remote ?? row.base;
+    }
+
+    function resolvedRowValue(row) {
+      if (!row.conflict_key) return {unresolved: false, value: automaticRowValue(row)};
+      const resolution = resolutions[row.conflict_key];
+      if (!resolution) return {unresolved: true, value: ""};
+      if (resolution.choice === "manual") return {unresolved: false, value: resolution.value || ""};
+      return {unresolved: false, value: row[resolution.choice]};
+    }
+
+    function updateDraftResultFields() {
+      resultElements.forEach((element, fieldId) => {
+        const row = semanticRows.find(item => item.id === fieldId);
+        if (!row) return;
+        const resolved = resolvedRowValue(row);
+        element.classList.toggle("mxl-unresolved", resolved.unresolved);
+        element.dataset.mxlPlaceholder = resolved.unresolved ? "Click to choose source" : "";
+        element.textContent = resolved.value === null || resolved.value === undefined ? "" : String(resolved.value);
+        element.classList.toggle("mxl-selected-source", Boolean(row.conflict_key && resolutions[row.conflict_key]));
+      });
+    }
+
+    function decorateDraftResult() {
+      const frame = document.getElementById("resultFrame");
+      const doc = frame.contentDocument;
+      if (!doc?.body) return;
+      installFrameStyles(doc);
+      const elements = frameContentElements(doc);
+      elements.forEach(element => element.classList.add("mxl-content"));
+      resultElements.clear();
+      const used = new Set();
+      semanticRows.filter(row => row.state !== "unchanged" && row.base !== null && row.base !== undefined).forEach(row => {
+        const element = findFieldElement(
+          elements,
+          row.base,
+          used,
+          rowOccurrence(row, "base")
+        );
+        if (!element) return;
+        markElement(element, row);
+        resultElements.set(row.id, element);
+        element.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          showFieldPicker(row.conflict_key || "", Boolean(row.conflict_key));
+        });
+      });
+      applyFrameViewState(doc);
+      updateDraftResultFields();
+      highlightActiveConflict(conflictByKey[activeConflictKey]);
+    }
+
+    function decorateExactResult() {
+      const frame = document.getElementById("resultFrame");
+      const doc = frame.contentDocument;
+      if (!doc?.body) return;
+      installFrameStyles(doc);
+      const elements = frameContentElements(doc);
+      elements.forEach(element => element.classList.add("mxl-content"));
+      const used = new Set();
+      semanticRows.filter(row => row.state !== "unchanged").forEach(row => {
+        const resolved = resolvedRowValue(row);
+        if (resolved.unresolved) return;
+        const element = findFieldElement(
+          elements,
+          resolved.value,
+          used,
+          rowOccurrence(row, "result", item => resolvedRowValue(item).value)
+        );
+        if (!element) return;
+        markElement(element, row);
+        element.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          showFieldPicker(row.conflict_key || "", Boolean(row.conflict_key));
+        });
+      });
+      applyFrameViewState(doc);
+      highlightActiveConflict(conflictByKey[activeConflictKey]);
+    }
+
+    function showDraftResult() {
+      const frame = document.getElementById("resultFrame");
+      const structural = conflictByKey.structural;
+      const structuralChoice = resolutions.structural?.choice;
+      const overlay = document.getElementById("resultOverlay");
+      if (!exactPreviewAvailable) {
+        overlay.textContent = "The 1C HTML renderer is unavailable. Resolve conflicts using the semantic view below.";
+        overlay.classList.add("visible");
+        return;
+      }
+      if (structural && !structuralChoice) {
+        overlay.textContent = "The document structure changed on both sides. Choose Base, Local, or Remote as the complete result.";
+        overlay.classList.add("visible");
+      } else {
+        overlay.classList.remove("visible");
+      }
+      const source = structuralChoice || "base";
+      const desired = `/preview/${token}/${source}`;
+      document.getElementById("resultStatus").textContent = "";
+      if (frame.dataset.source !== `draft-${source}`) {
+        frame.dataset.source = `draft-${source}`;
+        frame.src = desired;
+      } else if (!structural) {
+        updateDraftResultFields();
+      }
+    }
+
+    async function refreshExactResult(generation) {
+      const status = document.getElementById("resultStatus");
+      const button = document.getElementById("refreshExactButton");
+      status.textContent = "Opening 1C to render the exact result…";
+      button.disabled = true;
+      button.textContent = "Rendering…";
+      try {
+        const response = await fetch(`${apiBase}/preview-result`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({resolutions})
+        });
+        const payload = await response.json();
+        if (generation !== exactPreviewGeneration) return;
+        if (!response.ok) throw new Error(payload.error || "Unable to render merged preview");
+        if (payload.status !== "rendered") {
+          status.textContent = "Exact HTML renderer is unavailable";
+          return;
+        }
+        const frame = document.getElementById("resultFrame");
+        frame.dataset.source = "exact";
+        frame.src = `/preview/${token}/result?v=${payload.revision}`;
+        status.textContent = "";
+      } catch (error) {
+        if (generation !== exactPreviewGeneration) return;
+        status.textContent = "";
+        showToast(`Result preview: ${error.message}`, true);
+      } finally {
+        if (generation === exactPreviewGeneration) {
+          button.textContent = "Render exact";
+          updateProgress();
+        }
+      }
+    }
+
+    function requestExactResult() {
+      exactPreviewGeneration += 1;
+      if (!allConflictsResolved() || !exactPreviewAvailable) {
+        showToast("Resolve every conflict before rendering the exact result", true);
+        return;
+      }
+      refreshExactResult(exactPreviewGeneration);
+    }
+
+    function choose(key, choice, value = "") {
+      if (sessionEnded) return;
+      resolutions[key] = choice === "manual" ? {choice, value} : {choice};
+      if (choice === "manual") {
+        document.querySelectorAll(`textarea[data-manual-key="${CSS.escape(key)}"]`).forEach(textarea => {
+          if (textarea !== document.activeElement && textarea.value !== value) textarea.value = value;
+        });
+      }
+      document.querySelectorAll(`[data-key="${CSS.escape(key)}"] .choice`).forEach(node => {
+        node.classList.toggle("selected", node.dataset.choice === choice);
+      });
+      document.querySelectorAll(`textarea[data-manual-key="${CSS.escape(key)}"]`).forEach(textarea => {
+        textarea.closest(".manual, .picker-manual")?.classList.toggle("selected", choice === "manual");
+      });
+      if (activeConflictKey === key && choice === "manual") {
+        document.querySelectorAll("#sourcePicker .source-picker-choice").forEach(node => node.classList.remove("selected"));
+      }
+      updateProgress();
+      updateSourceSelections();
+      if (activeConflictKey === key && choice !== "manual") showFieldPicker(key);
+      showDraftResult();
+      exactPreviewGeneration += 1;
+    }
+
+    function choiceNode(conflict, side) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "choice";
+      button.dataset.choice = side;
+      const label = document.createElement("div");
+      label.className = "choice-label";
+      label.textContent = side;
+      const value = document.createElement("div");
+      value.className = "choice-value";
+      value.textContent = escapeText(conflict[side]);
+      button.append(label, value);
+      button.addEventListener("click", () => choose(conflict.key, side));
+      return button;
+    }
+
+    function renderConflicts() {
+      if (!model.conflicts.length) {
+        const empty = document.createElement("div");
+        empty.className = "card empty";
+        empty.textContent = "No manual decisions are required. The merge can be saved safely.";
+        conflictsNode.append(empty);
+        return;
+      }
+
+      model.conflicts.forEach((conflict, index) => {
+        const card = document.createElement("article");
+        card.className = "card conflict-card";
+        card.dataset.key = conflict.key;
+        const head = document.createElement("div");
+        head.className = "conflict-head";
+        const number = document.createElement("div");
+        number.className = "conflict-number";
+        number.textContent = conflict.kind === "structural" ? "Structural conflict" : `Conflict ${index + 1} · token ${conflict.token_index}`;
+        head.append(number);
+
+        const choices = document.createElement("div");
+        choices.className = "choices";
+        if (conflict.kind === "structural") {
+          ["base", "local", "remote"].forEach(side => {
+            const summary = {...conflict, [side]: `${side} document · ${conflict[`${side}_token_count`]} tokens`};
+            choices.append(choiceNode(summary, side));
+          });
+        } else {
+          ["base", "local", "remote"].forEach(side => choices.append(choiceNode(conflict, side)));
+        }
+        card.append(head);
+        if ((conflict.context || []).length) {
+          const context = document.createElement("details");
+          context.className = "conflict-context";
+          const summary = document.createElement("summary");
+          summary.textContent = "Technical context";
+          const values = document.createElement("div");
+          values.textContent = conflict.context.join(" · ");
+          context.append(summary, values);
+          card.append(context);
+        }
+        card.append(choices);
+
+        if (conflict.manual_allowed && conflict.kind !== "structural") {
+          card.classList.add("has-manual");
+          const manual = document.createElement("div");
+          manual.className = "manual";
+          const textarea = document.createElement("textarea");
+          textarea.dataset.manualKey = conflict.key;
+          textarea.placeholder = "Manual merged value";
+          textarea.addEventListener("focus", () => choose(conflict.key, "manual", textarea.value));
+          textarea.addEventListener("input", () => choose(conflict.key, "manual", textarea.value));
+          manual.append(textarea);
+          card.append(manual);
+        }
+        conflictsNode.append(card);
+      });
+    }
+
+    function renderDocumentTitle() {
+      const path = model.paths.output || model.paths.local || model.paths.remote || "";
+      const fileName = String(path).split(/[\\/]/).filter(Boolean).pop() || "MXL merge";
+      const title = document.getElementById("documentTitle");
+      title.textContent = fileName;
+      title.title = path;
+      document.title = `${fileName} — MXL merge`;
+    }
+
+    function renderRenderedPreviews() {
+      const preview = model.previews.rendered;
+      const node = document.getElementById("renderedPreviews");
+      if (!preview.provider || preview.available.length !== 3) {
+        const unavailable = document.createElement("div");
+        unavailable.className = "preview-unavailable";
+        unavailable.textContent = preview.provider
+          ? "The external converter could not render all three documents. Semantic alignment remains available below."
+          : "No 1C HTML converter is configured. Semantic alignment remains available below.";
+        Object.entries(preview.errors || {}).forEach(([side, error]) => {
+          const detail = document.createElement("div");
+          detail.className = "preview-error";
+          detail.textContent = `${side}: ${error}`;
+          unavailable.append(detail);
+        });
+        node.append(unavailable);
+        return;
+      }
+
+      const grid = document.createElement("div");
+      grid.className = "rendered-grid";
+      const frames = [];
+      ["base", "local", "remote"].forEach(side => {
+        const pane = document.createElement("div");
+        pane.className = "rendered-pane";
+        const label = document.createElement("div");
+        label.className = "rendered-label";
+        const labelText = document.createElement("span");
+        labelText.textContent = side;
+        label.append(labelText);
+        if (conflictByKey.structural) {
+          const useButton = document.createElement("button");
+          useButton.type = "button";
+          useButton.className = "use-document";
+          useButton.textContent = `Use ${side}`;
+          useButton.addEventListener("click", () => {
+            showFieldPicker("structural");
+            choose("structural", side);
+          });
+          label.append(useButton);
+        }
+        const frame = document.createElement("iframe");
+        frame.title = `${side} rendered MXL`;
+        frame.sandbox = "allow-same-origin";
+        frame.src = `/preview/${token}/${side}`;
+        frames.push(frame);
+        sourceFrames[side] = frame;
+        pane.append(label, frame);
+        grid.append(pane);
+      });
+      node.append(grid);
+
+      let syncing = false;
+      frames.forEach(frame => frame.addEventListener("load", () => {
+        const side = Object.entries(sourceFrames).find(([, candidate]) => candidate === frame)?.[0];
+        if (side) decorateSourceFrame(side, frame);
+        frame.contentWindow.addEventListener("scroll", () => {
+          if (syncing) return;
+          syncing = true;
+          frames.filter(target => target !== frame).forEach(target => {
+            target.contentWindow.scrollTo(frame.contentWindow.scrollX, frame.contentWindow.scrollY);
+          });
+          requestAnimationFrame(() => syncing = false);
+        });
+      }));
+    }
+
+    function renderSemanticPreview() {
+      const preview = model.previews.semantic;
+      const node = document.getElementById("semanticRows");
+      const changed = preview.total - (preview.stats.unchanged || 0);
+      document.getElementById("semanticMeta").textContent =
+        `${preview.total} aligned rows · ${changed} changed${preview.truncated ? " · preview truncated" : ""}. ` +
+        "Insertions, deletions and reorderings are visualized here but are not merged automatically.";
+      preview.rows.forEach(row => {
+        const tr = document.createElement("tr");
+        tr.className = `state-${row.state}`;
+        ["base", "local", "remote"].forEach(side => {
+          const td = document.createElement("td");
+          if (row[side] === null || row[side] === undefined) {
+            td.textContent = "∅";
+            td.className = "semantic-empty";
+          } else {
+            td.textContent = row[side];
+          }
+          tr.append(td);
+        });
+        node.append(tr);
+      });
+    }
+
+    document.querySelectorAll("[data-all]").forEach(button => {
+      button.addEventListener("click", () => model.conflicts.forEach(conflict => choose(conflict.key, button.dataset.all)));
+    });
+
+    document.querySelectorAll("[data-view-mode]").forEach(button => {
+      button.addEventListener("click", () => {
+        viewMode = button.dataset.viewMode;
+        applyViewMode();
+      });
+    });
+
+    document.getElementById("dimToggle").addEventListener("click", () => {
+      dimUnchanged = !dimUnchanged;
+      applyViewMode();
+    });
+
+    document.getElementById("zoomOut").addEventListener("click", () => changeZoom(-.1));
+    document.getElementById("zoomIn").addEventListener("click", () => changeZoom(.1));
+    document.getElementById("zoomReset").addEventListener("click", () => {
+      previewZoom = 1;
+      updateZoom();
+    });
+
+    document.getElementById("previousConflict").addEventListener("click", () => navigateConflict(-1));
+    document.getElementById("nextConflict").addEventListener("click", () => navigateConflict(1));
+    document.getElementById("refreshExactButton").addEventListener("click", requestExactResult);
+
+    document.getElementById("resultFrame").addEventListener("load", () => {
+      const frame = document.getElementById("resultFrame");
+      if (frame.dataset.source === "exact") {
+        decorateExactResult();
+      } else if (!conflictByKey.structural) {
+        decorateDraftResult();
+      } else {
+        try {
+          installFrameStyles(frame.contentDocument);
+          applyFrameViewState(frame.contentDocument);
+        } catch (_) {}
+      }
+    });
+
+    saveButton.addEventListener("click", async () => {
+      if (sessionEnded) return;
+      saveButton.disabled = true;
+      cancelButton.disabled = true;
+      saveButton.textContent = "Saving…";
+      try {
+        const response = await fetch(`${apiBase}/resolve`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({resolutions})
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Unable to save merge result");
+        sessionEnded = true;
+        document.body.classList.add("session-ended");
+        saveButton.textContent = "Saved";
+        cancelButton.hidden = true;
+        document.getElementById("sourcePicker").innerHTML = '<div class="source-picker-empty">Merge saved. This session is complete.</div>';
+        showToast(`Saved to ${payload.output}`);
+      } catch (error) {
+        saveButton.disabled = false;
+        cancelButton.disabled = false;
+        saveButton.textContent = "Save";
+        showToast(error.message, true);
+      }
+    });
+
+    function resetDecisions() {
+      Object.keys(resolutions).forEach(key => delete resolutions[key]);
+      document.querySelectorAll(".choice.selected, .manual.selected, .picker-manual.selected, .source-picker-choice.selected").forEach(node => node.classList.remove("selected"));
+      document.querySelectorAll("textarea[data-manual-key]").forEach(textarea => textarea.value = "");
+      document.querySelectorAll(".conflict-card.active-conflict-card").forEach(card => card.classList.remove("active-conflict-card"));
+      activeConflictKey = null;
+      activeConflictIndex = -1;
+      updateConflictNavigation();
+      updateSourceSelections();
+      showDraftResult();
+      updateProgress();
+    }
+
+    cancelButton.addEventListener("click", async () => {
+      if (sessionEnded) return;
+      cancelButton.disabled = true;
+      saveButton.disabled = true;
+      cancelButton.textContent = "Cancelling…";
+      resetDecisions();
+      try {
+        const response = await fetch(`${apiBase}/cancel`, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+        if (!response.ok) throw new Error("Unable to cancel merge");
+        sessionEnded = true;
+        document.body.classList.add("session-ended");
+        saveButton.disabled = true;
+        cancelButton.textContent = "Cancelled";
+        document.getElementById("sourcePicker").innerHTML = '<div class="source-picker-empty">Merge cancelled. No file was written.</div>';
+        showToast("Merge cancelled; all choices were discarded");
+      } catch (error) {
+        cancelButton.disabled = false;
+        cancelButton.textContent = "Cancel";
+        updateProgress();
+        showToast(error.message, true);
+      }
+    });
+
+    renderDocumentTitle();
+    renderConflicts();
+    renderRenderedPreviews();
+    showDraftResult();
+    renderSemanticPreview();
+    updateProgress();
+    updateConflictNavigation();
+    updateZoom();
+  </script>
+</body>
+</html>
