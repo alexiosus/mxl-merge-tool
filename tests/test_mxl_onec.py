@@ -7,12 +7,15 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import mxl_onec
 from mxl_onec import (
+    BATCH_CAPABILITY_MARKER,
     INFOBASE_MARKER,
     MANAGED_INFOBASE_USER,
     OneCRenderError,
     OneCRenderSettings,
     build_onec_command,
+    epf_supports_batch,
     ensure_renderer_infobase,
     render_mxl_batch_with_onec,
     render_mxl_with_onec,
@@ -30,7 +33,9 @@ class MxlOneCRenderTests(unittest.TestCase):
         (infobase / INFOBASE_MARKER).write_bytes(b"fake")
         epf = root / "MxlToHtml.epf"
         epf.write_bytes(b"fake")
-        return OneCRenderSettings(client, infobase, epf, "Service", "secret", 5)
+        return OneCRenderSettings(
+            client, infobase, epf, "Service", "secret", 5, batch_capable=True
+        )
 
     def test_builds_platform_command_with_file_infobase_and_authentication(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -58,6 +63,22 @@ class MxlOneCRenderTests(unittest.TestCase):
             'File="C:\\Users\\Test User\\MxlMerge\\ib";',
             _file_infobase_connection(Path(r"C:\Users\Test User\MxlMerge\ib")),
         )
+
+    def test_batch_support_requires_explicit_capability_marker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            epf = Path(directory) / "custom.epf"
+            epf.write_bytes(b"unknown custom processor")
+            self.assertFalse(epf_supports_batch(epf))
+
+            Path(f"{epf}.batch-capable").write_text(
+                BATCH_CAPABILITY_MARKER, encoding="utf-8"
+            )
+            self.assertTrue(epf_supports_batch(epf))
+
+    def test_updated_bundled_epf_is_batch_capable_by_default(self):
+        bundled = Path(mxl_onec.__file__).resolve().parent / "onec" / "MxlToHtml.epf"
+
+        self.assertTrue(epf_supports_batch(bundled))
 
     def test_renders_and_validates_status(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -87,6 +108,8 @@ class MxlOneCRenderTests(unittest.TestCase):
             settings = self.settings(root)
             source = root / "source.mxl"
             source.write_bytes(b"MOXCEL-test")
+            target = root / "source.html"
+            target.write_text("existing preview", encoding="utf-8")
 
             def fake_run(command, **kwargs):
                 job_path = Path(command[command.index("/C") + 1])
@@ -99,7 +122,9 @@ class MxlOneCRenderTests(unittest.TestCase):
 
             with patch("mxl_onec.subprocess.run", side_effect=fake_run):
                 with self.assertRaisesRegex(OneCRenderError, "Cannot read MXL"):
-                    render_mxl_with_onec(source, root / "source.html", settings)
+                    render_mxl_with_onec(source, target, settings)
+
+            self.assertEqual("existing preview", target.read_text(encoding="utf-8"))
 
     def test_renders_batch_in_one_platform_process(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -167,6 +192,45 @@ class MxlOneCRenderTests(unittest.TestCase):
         self.assertEqual(str(designer), create_command[0])
         self.assertIn("CREATEINFOBASE", create_command)
         self.assertIn("/RestoreIB", restore_command)
+
+    def test_managed_infobase_is_rebuilt_in_staging_before_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = root / "8.3.27.1" / "bin" / "1cv8c.exe"
+            client.parent.mkdir(parents=True)
+            client.write_bytes(b"fake")
+            client.with_name("1cv8.exe").write_bytes(b"fake")
+            infobase = root / "runtime" / "ib"
+            infobase.mkdir(parents=True)
+            (infobase / INFOBASE_MARKER).write_bytes(b"old")
+            (infobase / "old-data").write_bytes(b"old")
+            epf = root / "MxlToHtml.epf"
+            epf.write_bytes(b"fake")
+            template = root / "MxlRendererTemplate.dt"
+            template.write_bytes(b"new-template")
+            settings = OneCRenderSettings(
+                client,
+                infobase,
+                epf,
+                timeout_seconds=5,
+                managed_infobase=True,
+            )
+
+            def fake_run(command, **kwargs):
+                if "CREATEINFOBASE" in command:
+                    staging = next(infobase.parent.glob(".ib.building-*"))
+                    (staging / INFOBASE_MARKER).write_bytes(b"new")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with patch("mxl_onec._managed_template_path", return_value=template), patch(
+                "mxl_onec.subprocess.run", side_effect=fake_run
+            ):
+                ensure_renderer_infobase(settings)
+
+            self.assertEqual(b"new", (infobase / INFOBASE_MARKER).read_bytes())
+            self.assertFalse((infobase / "old-data").exists())
+            self.assertEqual([], list(infobase.parent.glob(".ib.building-*")))
+            self.assertEqual([], list(infobase.parent.glob(".ib.backup-*")))
 
     def test_resolves_default_infobase_from_client_path(self):
         with tempfile.TemporaryDirectory() as directory:

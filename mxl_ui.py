@@ -9,7 +9,7 @@ import secrets
 import subprocess
 import threading
 import webbrowser
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 try:
     from tools.mxl_merge.mxl_preview import (
         PreviewBundle,
+        build_semantic_preview_bundle,
         build_preview_bundle,
         configured_batch_preview_command,
         configured_preview_command,
@@ -28,6 +29,7 @@ try:
 except ModuleNotFoundError:
     from mxl_preview import (  # type: ignore[no-redef]
         PreviewBundle,
+        build_semantic_preview_bundle,
         build_preview_bundle,
         configured_batch_preview_command,
         configured_preview_command,
@@ -40,10 +42,13 @@ try:
         MergeResult,
         MxlDocument,
         MxlFormatError,
+        atomic_write_bytes,
+        driver_report_path,
         load_document,
         merge_documents,
         parse_document,
         resolve_documents,
+        semantic_coordinates,
         semantic_entries,
     )
 except ModuleNotFoundError:
@@ -51,10 +56,13 @@ except ModuleNotFoundError:
         MergeResult,
         MxlDocument,
         MxlFormatError,
+        atomic_write_bytes,
+        driver_report_path,
         load_document,
         merge_documents,
         parse_document,
         resolve_documents,
+        semantic_coordinates,
         semantic_entries,
     )
 
@@ -77,6 +85,8 @@ class UiSession:
     preview_bundle: PreviewBundle | None = None
     preview_command: str | None = None
     batch_preview_command: str | None = None
+    preview_loading: bool = False
+    preview_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @classmethod
     def from_paths(
@@ -96,6 +106,8 @@ class UiSession:
         self,
         preview_command: str | None = None,
         batch_preview_command: str | None = None,
+        *,
+        defer_external: bool = False,
     ) -> None:
         self.preview_command = configured_preview_command(preview_command)
         # An explicit one-document converter is a complete per-run override.
@@ -106,11 +118,50 @@ class UiSession:
             if preview_command is not None and batch_preview_command is None
             else configured_batch_preview_command(batch_preview_command)
         )
-        self.preview_bundle = build_preview_bundle(
-            {"base": self.base, "local": self.local, "remote": self.remote},
-            self.preview_command,
-            self.batch_preview_command,
-        )
+        documents = {"base": self.base, "local": self.local, "remote": self.remote}
+        if defer_external and (self.preview_command or self.batch_preview_command):
+            self.preview_bundle = build_semantic_preview_bundle(documents)
+            self.preview_loading = True
+        else:
+            self.preview_bundle = build_preview_bundle(
+                documents,
+                self.preview_command,
+                self.batch_preview_command,
+            )
+            self.preview_loading = False
+
+    def start_deferred_previews(self) -> None:
+        if not self.preview_loading:
+            return
+
+        def render() -> None:
+            documents = {"base": self.base, "local": self.local, "remote": self.remote}
+            try:
+                bundle = build_preview_bundle(
+                    documents,
+                    self.preview_command,
+                    self.batch_preview_command,
+                )
+            except Exception as error:  # Keep the semantic UI usable for provider failures.
+                semantic = build_semantic_preview_bundle(documents).semantic
+                bundle = PreviewBundle(semantic, {}, None, {"provider": str(error)})
+            with self.preview_lock:
+                self.preview_bundle = bundle
+                self.preview_loading = False
+
+        threading.Thread(target=render, name="mxl-preview-render", daemon=True).start()
+
+    def rendered_preview_model(self) -> dict[str, object]:
+        with self.preview_lock:
+            preview = self.preview_bundle
+            if preview is None:
+                return {"provider": None, "available": [], "errors": {}, "loading": False}
+            return {
+                "provider": preview.renderer,
+                "available": list(preview.rendered_html),
+                "errors": preview.errors,
+                "loading": self.preview_loading,
+            }
 
     def model(self) -> dict[str, Any]:
         result = self.initial_result()
@@ -121,33 +172,140 @@ class UiSession:
 
         semantic_rows = [dict(row) for row in preview.semantic.rows]
         base_entries = semantic_entries(self.base)
+        coordinates_by_side = {
+            "base": semantic_coordinates(self.base),
+            "local": semantic_coordinates(self.local),
+            "remote": semantic_coordinates(self.remote),
+        }
         conflict_keys = {
             str(conflict["token_index"])
             for conflict in result.conflicts
             if conflict["kind"] == "value"
         }
-        field_by_conflict: dict[str, str] = {}
+        row_conflict_by_anchor: dict[str, dict[int, str]] = {
+            "base": {},
+            "local": {},
+            "remote": {},
+        }
+        for conflict in result.conflicts:
+            if conflict["kind"] != "row":
+                continue
+            anchors = conflict.get("field_anchors", {})
+            if not isinstance(anchors, Mapping):
+                continue
+            for side in ("base", "local", "remote"):
+                side_anchors = anchors.get(side, [])
+                if isinstance(side_anchors, list):
+                    for anchor in side_anchors:
+                        if isinstance(anchor, int):
+                            row_conflict_by_anchor[side][anchor] = str(conflict["key"])
+
+        fields_by_conflict: dict[str, list[str]] = {}
+        automatic_value_decisions: dict[str, dict[str, Any]] = {}
         for row_index, row in enumerate(semantic_rows):
             field_id = f"field-{row_index}"
             row["id"] = field_id
+            indices = row.get("indices", {})
+            row["coordinates"] = {
+                side: (
+                    coordinates_by_side[side][side_index]
+                    if isinstance(indices, Mapping)
+                    and isinstance((side_index := indices.get(side)), int)
+                    and side_index < len(coordinates_by_side[side])
+                    else None
+                )
+                for side in ("base", "local", "remote")
+            }
+            row_conflict_keys = {
+                row_conflict_by_anchor[side][side_index]
+                for side in ("base", "local", "remote")
+                if isinstance(indices, Mapping)
+                and isinstance((side_index := indices.get(side)), int)
+                and side_index in row_conflict_by_anchor[side]
+            }
+            if len(row_conflict_keys) == 1:
+                row_conflict_key = row_conflict_keys.pop()
+                row["row_conflict_key"] = row_conflict_key
+                row["conflict_key"] = row_conflict_key
+                fields_by_conflict.setdefault(row_conflict_key, []).append(field_id)
             anchor = row.get("anchor")
-            if row.get("base") is not None and isinstance(anchor, int) and anchor < len(base_entries):
+            if (
+                row.get("base") is not None
+                and isinstance(anchor, int)
+                and anchor < len(base_entries)
+            ):
                 conflict_key = str(base_entries[anchor][0])
                 if conflict_key in conflict_keys:
                     row["conflict_key"] = conflict_key
-                    field_by_conflict[conflict_key] = field_id
+                    fields_by_conflict.setdefault(conflict_key, []).append(field_id)
+                else:
+                    base_value = row.get("base")
+                    local_value = row.get("local")
+                    remote_value = row.get("remote")
+                    default_choice: str | None = None
+                    if (
+                        local_value is not None
+                        and remote_value is not None
+                        and local_value == remote_value
+                        and local_value != base_value
+                    ):
+                        default_choice = "local"
+                    elif local_value == base_value and remote_value not in {None, base_value}:
+                        default_choice = "remote"
+                    elif remote_value == base_value and local_value not in {None, base_value}:
+                        default_choice = "local"
+                    if default_choice is not None:
+                        token_index = base_entries[anchor][0]
+                        row["conflict_key"] = conflict_key
+                        fields_by_conflict.setdefault(conflict_key, []).append(field_id)
+                        automatic_value_decisions[conflict_key] = {
+                            "kind": "value",
+                            "key": conflict_key,
+                            "token_index": token_index,
+                            "token_type": self.base.tokens[token_index].kind,
+                            "base": base_value,
+                            "local": local_value,
+                            "remote": remote_value,
+                            "default_choice": default_choice,
+                            "requires_choice": False,
+                            "automatic": True,
+                        }
+
+        rows_by_id = {str(row["id"]): row for row in semantic_rows}
+
+        def attach_field_metadata(item: dict[str, Any]) -> None:
+            field_ids = fields_by_conflict.get(item["key"], [])
+            if not field_ids:
+                return
+            item["field_id"] = field_ids[0]
+            item["field_ids"] = field_ids
+            linked_rows = [rows_by_id[field_id] for field_id in field_ids]
+            item["coordinates"] = {
+                side: list(
+                    dict.fromkeys(
+                        coordinate
+                        for row in linked_rows
+                        if (coordinate := row.get("coordinates", {}).get(side))
+                    )
+                )
+                for side in ("base", "local", "remote")
+            }
 
         conflicts: list[dict[str, Any]] = []
         for conflict in result.conflicts:
             item = dict(conflict)
-            item["key"] = (
-                "structural"
-                if conflict["kind"] == "structural"
-                else str(conflict["token_index"])
-            )
+            if conflict["kind"] == "structural":
+                item["key"] = "structural"
+            elif conflict["kind"] == "row":
+                item["key"] = str(conflict["key"])
+            else:
+                item["key"] = str(conflict["token_index"])
             item["manual_allowed"] = conflict.get("token_type") in {"string", "atom"}
-            if item["key"] in field_by_conflict:
-                item["field_id"] = field_by_conflict[item["key"]]
+            attach_field_metadata(item)
+            conflicts.append(item)
+        for item in automatic_value_decisions.values():
+            item["manual_allowed"] = item.get("token_type") in {"string", "atom"}
+            attach_field_metadata(item)
             conflicts.append(item)
 
         return {
@@ -167,11 +325,7 @@ class UiSession:
                     "truncated": preview.semantic.truncated,
                     "stats": preview.semantic.stats,
                 },
-                "rendered": {
-                    "provider": preview.renderer,
-                    "available": list(preview.rendered_html),
-                    "errors": preview.errors,
-                },
+                "rendered": self.rendered_preview_model(),
             },
         }
 
@@ -201,8 +355,11 @@ class UiSession:
         # Parse before and after writing so the UI never reports success for a
         # malformed serialization and Git never receives a corrupt output.
         parse_document(result.data, str(self.output_path))
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.output_path.write_bytes(result.data)
+        atomic_write_bytes(self.output_path, result.data)
+        try:
+            driver_report_path(self.output_path).unlink()
+        except FileNotFoundError:
+            pass
         return result
 
 
@@ -253,6 +410,9 @@ class MxlUiRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path == f"/api/{self.server.token}/preview-status":
+            self._send_json(HTTPStatus.OK, self.server.session.rendered_preview_model())
+            return
         preview_prefix = f"/preview/{self.server.token}/"
         if path.startswith(preview_prefix):
             side = path.removeprefix(preview_prefix)
@@ -413,13 +573,16 @@ def create_ui_server(
 ) -> tuple[MxlUiServer, str]:
     if host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("The MXL merge UI can only bind to a loopback address")
-    session.prepare_previews(preview_command, batch_preview_command)
+    session.prepare_previews(
+        preview_command, batch_preview_command, defer_external=True
+    )
     token = secrets.token_urlsafe(24)
     server = MxlUiServer(
         (host, port), session, token, render_ui(session.model(), token)
     )
     actual_host, actual_port = server.server_address[:2]
     url_host = "127.0.0.1" if actual_host in {"0.0.0.0", "::"} else actual_host
+    session.start_deferred_previews()
     return server, f"http://{url_host}:{actual_port}/session/{token}"
 
 

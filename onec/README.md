@@ -47,16 +47,20 @@ service infobase template restored automatically on first use; it is the same
 verified startup template used by KOT. The generated file infobase remains on
 the same machine so server context can access the input and output paths.
 
-The checked-in EPF was supplied and manually verified on 2026-07-16. It is the
-legacy single-document build; SHA-256:
+The checked-in EPF was rebuilt from the batch-capable module and verified on
+2026-07-23. SHA-256:
+`70ae14205f391cde144aabd291c5d993ecc2adc44de7112cf91900df8e4e15ad`.
+The installer recognizes this build and enables `mxl.previewBatchCommand`
+automatically. The known legacy single-document hash remains
 `aa894caf035962974c1834fa8ae9e123a0f3f89182ce53dfc9ad8d1eae0a1e56`.
 
-To enable batch rendering, open `MxlToHtml.epf` in the English Designer, replace
-its default managed form module with the complete contents of
-`MxlToHtml.bsl`, save the external processor, copy the rebuilt EPF over this
-file, and rerun `mxl_tool.py install --onec-client ...`. The installer leaves
-the legacy hash on the three-process fallback and enables
-`mxl.previewBatchCommand` for the rebuilt processor.
+For another custom rebuild, open `MxlToHtml.epf` in the English Designer, replace
+its default managed form module with the complete contents of `MxlToHtml.bsl`,
+save it, and rerun `mxl_tool.py install --onec-client ... --onec-epf ...
+--onec-batch-capable`. An arbitrary modified EPF cannot be identified safely by
+its hash. As an alternative, place a UTF-8 sidecar named
+`MxlToHtml.epf.batch-capable` next to the EPF with the exact contents
+`mxl-merge-batch-v1`.
 
 The bundled DT SHA-256 is
 `587f2bb76e04b212938d00c2cda0004f0f7a08175abe94ed1b70f0067fd7cd19`.

@@ -12,6 +12,7 @@ import os
 import shlex
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -48,12 +49,21 @@ class PreviewBundle:
 class _SideAlignment:
     mapped: dict[int, str | None]
     insertions: dict[int, list[str]]
+    mapped_indexes: dict[int, int | None]
+    insertion_indexes: dict[int, list[int]]
 
 
 def _align_side(base: Sequence[str], side: Sequence[str]) -> _SideAlignment:
     mapped: dict[int, str | None] = {}
     insertions: dict[int, list[str]] = {}
-    matcher = SequenceMatcher(a=base, b=side, autojunk=False)
+    mapped_indexes: dict[int, int | None] = {}
+    insertion_indexes: dict[int, list[int]] = {}
+    largest = max(len(base), len(side))
+    unique_values = len(set(base)) + len(set(side))
+    # Disabling SequenceMatcher's popular-item heuristic is useful for normal
+    # templates, but becomes quadratic on thousands of repeated labels.
+    highly_repetitive = largest >= 2_000 and unique_values * 4 < len(base) + len(side)
+    matcher = SequenceMatcher(a=base, b=side, autojunk=highly_repetitive)
 
     for tag, base_start, base_end, side_start, side_end in matcher.get_opcodes():
         base_length = base_end - base_start
@@ -63,29 +73,37 @@ def _align_side(base: Sequence[str], side: Sequence[str]) -> _SideAlignment:
         if tag == "equal":
             for offset in range(base_length):
                 mapped[base_start + offset] = side[side_start + offset]
+                mapped_indexes[base_start + offset] = side_start + offset
             continue
 
         if tag == "insert":
             insertions.setdefault(base_start, []).extend(side[side_start:side_end])
+            insertion_indexes.setdefault(base_start, []).extend(range(side_start, side_end))
             continue
 
         if tag == "delete":
             for base_index in range(base_start, base_end):
                 mapped[base_index] = None
+                mapped_indexes[base_index] = None
             continue
 
         # A replacement is aligned positionally inside the changed block. Any
         # remaining side values become insertions at the end of the base block.
         for offset in range(shared_length):
             mapped[base_start + offset] = side[side_start + offset]
+            mapped_indexes[base_start + offset] = side_start + offset
         for base_index in range(base_start + shared_length, base_end):
             mapped[base_index] = None
+            mapped_indexes[base_index] = None
         if side_length > shared_length:
             insertions.setdefault(base_start + shared_length, []).extend(
                 side[side_start + shared_length : side_end]
             )
+            insertion_indexes.setdefault(base_start + shared_length, []).extend(
+                range(side_start + shared_length, side_end)
+            )
 
-    return _SideAlignment(mapped, insertions)
+    return _SideAlignment(mapped, insertions, mapped_indexes, insertion_indexes)
 
 
 def _row_state(base: str | None, local: str | None, remote: str | None) -> str:
@@ -117,6 +135,9 @@ def align_semantic_values(
         local_value: str | None,
         remote_value: str | None,
         anchor: int,
+        base_index: int | None,
+        local_index: int | None,
+        remote_index: int | None,
     ) -> None:
         state = _row_state(base_value, local_value, remote_value)
         stats[state] = stats.get(state, 0) + 1
@@ -127,6 +148,11 @@ def align_semantic_values(
                 "remote": remote_value,
                 "state": state,
                 "anchor": anchor,
+                "indices": {
+                    "base": base_index,
+                    "local": local_index,
+                    "remote": remote_index,
+                },
             }
         )
 
@@ -145,7 +171,23 @@ def align_semantic_values(
                 if insertion_index < len(remote_insertions)
                 else None
             )
-            append_row(None, local_value, remote_value, base_index)
+            append_row(
+                None,
+                local_value,
+                remote_value,
+                base_index,
+                None,
+                (
+                    local_alignment.insertion_indexes.get(base_index, [])[insertion_index]
+                    if insertion_index < len(local_alignment.insertion_indexes.get(base_index, []))
+                    else None
+                ),
+                (
+                    remote_alignment.insertion_indexes.get(base_index, [])[insertion_index]
+                    if insertion_index < len(remote_alignment.insertion_indexes.get(base_index, []))
+                    else None
+                ),
+            )
 
         if base_index < len(base):
             append_row(
@@ -153,6 +195,9 @@ def align_semantic_values(
                 local_alignment.mapped.get(base_index),
                 remote_alignment.mapped.get(base_index),
                 base_index,
+                base_index,
+                local_alignment.mapped_indexes.get(base_index),
+                remote_alignment.mapped_indexes.get(base_index),
             )
 
     total_rows = len(rows)
@@ -309,16 +354,23 @@ def render_document_html_batch(
         )[side]
 
 
-def build_preview_bundle(
+def build_semantic_preview_bundle(
     documents: Mapping[str, MxlDocument],
-    preview_command: str | None = None,
-    batch_preview_command: str | None = None,
 ) -> PreviewBundle:
     semantic = align_semantic_values(
         semantic_values(documents["base"]),
         semantic_values(documents["local"]),
         semantic_values(documents["remote"]),
     )
+    return PreviewBundle(semantic, {}, None, {})
+
+
+def build_preview_bundle(
+    documents: Mapping[str, MxlDocument],
+    preview_command: str | None = None,
+    batch_preview_command: str | None = None,
+) -> PreviewBundle:
+    semantic = build_semantic_preview_bundle(documents).semantic
     command = configured_preview_command(preview_command)
     batch_command = configured_batch_preview_command(batch_preview_command)
     if command is None and batch_command is None:
@@ -343,12 +395,18 @@ def build_preview_bundle(
             return PreviewBundle(semantic, rendered, "external-batch", errors)
         if command is None:
             return PreviewBundle(semantic, {}, None, errors)
-        for side, document in documents.items():
-            try:
-                rendered[side] = _render_with_command(
-                    document, command, side, output_directory
-                )
-            except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
-                errors[side] = str(error)
+        with ThreadPoolExecutor(max_workers=min(3, len(documents))) as executor:
+            futures = {
+                executor.submit(
+                    _render_with_command, document, command, side, output_directory
+                ): side
+                for side, document in documents.items()
+            }
+            for future in as_completed(futures):
+                side = futures[future]
+                try:
+                    rendered[side] = future.result()
+                except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+                    errors[side] = str(error)
 
     return PreviewBundle(semantic, rendered, "external", errors)

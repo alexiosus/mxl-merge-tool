@@ -61,6 +61,11 @@
     .conflict-nav button:hover { background: var(--accent-soft); }
     .conflict-nav button:disabled { cursor: default; opacity: .35; }
     .conflict-position { min-width: 44px; color: var(--muted); font-size: 11px; text-align: center; }
+    .history-controls { display: flex; overflow: hidden; border: 1px solid #cbd3df; border-radius: 7px; background: #fff; }
+    .history-controls button { min-width: 46px; height: 28px; border: 0; border-right: 1px solid #dce2ec; padding: 0 8px; color: #334a78; background: transparent; font-size: 10px; font-weight: 750; }
+    .history-controls button:last-child { border-right: 0; }
+    .history-controls button:hover { background: var(--accent-soft); }
+    .history-controls button:disabled { cursor: default; opacity: .35; }
     .actions { display: flex; gap: 6px; align-items: center; }
     .button {
       border: 1px solid transparent;
@@ -103,6 +108,8 @@
       background: #fafbfc;
     }
     .conflict-number { font-size: 12px; font-weight: 750; }
+    .conflict-card.automatic-row-change .conflict-head { background: #f0fdf7; }
+    .conflict-card.automatic-row-change .conflict-number { color: #087a56; }
     .choices { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .conflict-card.has-manual .choices { grid-column: 1; }
     .choice {
@@ -158,8 +165,25 @@
     .rendered-pane { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
     .rendered-pane:last-child { border-right: 0; }
     .rendered-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; color: var(--muted); background: #fafbfc; border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 800; text-transform: uppercase; }
-    .use-document { border: 1px solid #c8d2e3; border-radius: 7px; padding: 3px 7px; color: var(--accent); background: #fff; font-size: 10px; font-weight: 800; text-transform: none; }
-    .rendered-pane iframe { display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: #fff; }
+    .document-actions { display: flex; align-items: center; gap: 4px; text-transform: none; }
+    .use-document, .resolve-pending { border: 1px solid #c8d2e3; border-radius: 7px; padding: 3px 7px; color: var(--accent); background: #fff; font-size: 10px; font-weight: 800; white-space: nowrap; }
+    .use-document.selected { color: #fff; border-color: var(--accent); background: var(--accent); }
+    .resolve-pending { color: var(--muted); }
+    .use-document:hover, .resolve-pending:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .use-document.selected:hover { color: #fff; background: #244071; }
+    .frame-coordinate-shell { display: grid; grid-template-columns: 34px minmax(0, 1fr); grid-template-rows: 20px minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; background: #fff; }
+    .frame-coordinate-corner { grid-area: 1 / 1; z-index: 2; border-right: 1px solid #c5ccd8; border-bottom: 1px solid #c5ccd8; background: linear-gradient(135deg, #eef1f5 0 48%, #c5ccd8 49% 51%, #eef1f5 52% 100%); }
+    .frame-coordinate-columns, .frame-coordinate-rows { position: relative; z-index: 1; overflow: hidden; color: #526075; background: #f3f5f8; font: 700 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace; user-select: none; pointer-events: none; }
+    .frame-coordinate-columns { grid-area: 1 / 2; border-bottom: 1px solid #c5ccd8; }
+    .frame-coordinate-rows { grid-area: 2 / 1; border-right: 1px solid #c5ccd8; }
+    .frame-coordinate-label { position: absolute; display: grid; place-items: center; box-sizing: border-box; overflow: hidden; white-space: nowrap; }
+    .frame-coordinate-columns .frame-coordinate-label { top: 0; height: 20px; border-right: 1px solid #d8dde5; }
+    .frame-coordinate-rows .frame-coordinate-label { left: 0; width: 34px; border-bottom: 1px solid #d8dde5; }
+    .frame-coordinate-label.active { color: #174ea6; background: #dbeafe; }
+    .frame-coordinate-rows .frame-coordinate-label.placeholder { z-index: 2; color: #9f2434; border-top: 1px solid #bd2939; border-bottom: 1px solid #bd2939; background: repeating-linear-gradient(135deg, #fff0f1, #fff0f1 5px, #ffe3e6 5px, #ffe3e6 10px); font-size: 13px; }
+    .frame-coordinate-rows .frame-coordinate-label.placeholder.automatic { color: #087a56; border-color: #0f9f6e; background: #ecfdf5; }
+    .frame-coordinate-rows .frame-coordinate-label.placeholder.active { box-shadow: inset 3px 0 #bd2939; }
+    .frame-coordinate-shell iframe { grid-area: 2 / 2; display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: #fff; }
     .preview-unavailable { padding: 24px; color: var(--muted); text-align: center; }
     .preview-error { margin-top: 8px; color: var(--danger); font-size: 12px; }
 
@@ -173,17 +197,19 @@
     .exact-button:disabled { cursor: default; opacity: .45; }
     .result-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 28%); min-height: 0; }
     .result-frame-wrap { position: relative; min-height: 0; background: #fff; }
-    #resultFrame { display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: #fff; }
+    .result-frame-wrap > .frame-coordinate-shell { width: 100%; height: 100%; }
     .result-overlay { position: absolute; inset: 0; display: none; place-items: center; padding: 30px; color: #8a5a16; background: rgba(255, 248, 235, .86); text-align: center; font-weight: 750; pointer-events: none; }
     .result-overlay.visible { display: grid; }
     .source-picker { min-height: 0; overflow: auto; padding: 8px; border-left: 1px solid var(--line); background: #fafbfc; }
     .source-picker-empty { color: var(--muted); }
-    .source-picker-title { margin-bottom: 6px; font-size: 12px; font-weight: 750; }
+    .source-picker-title { font-size: 12px; font-weight: 750; }
+    .source-picker-location { margin: 2px 0 7px; color: var(--accent); font: 700 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
     .source-picker-choices { display: grid; grid-template-columns: 1fr; gap: 4px; }
-    .source-picker-choice { display: grid; grid-template-columns: 54px minmax(0, 1fr); align-items: center; gap: 6px; overflow: hidden; border: 1px solid #cbd3df; border-radius: 8px; padding: 6px 8px; color: var(--ink); background: #fff; text-align: left; }
+    .source-picker-choice { display: grid; grid-template-columns: 76px minmax(0, 1fr); align-items: center; gap: 6px; overflow: hidden; border: 1px solid #cbd3df; border-radius: 8px; padding: 6px 8px; color: var(--ink); background: #fff; text-align: left; }
     .source-picker-choice:hover { border-color: var(--accent); background: var(--accent-soft); }
     .source-picker-choice.selected { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); background: var(--accent-soft); }
     .source-picker-side { display: block; color: var(--muted); font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .source-picker-coordinate { display: block; margin-top: 1px; color: var(--accent); font: 700 9px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: none; }
     .source-picker-value { display: block; overflow: hidden; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
     .picker-manual { display: grid; gap: 4px; margin-top: 6px; border: 2px solid transparent; border-radius: 9px; padding: 5px; }
     .picker-manual.selected { border-color: var(--accent); background: var(--accent-soft); }
@@ -203,6 +229,15 @@
     .semantic-table tr.state-local td:nth-child(2), .semantic-table tr.state-remote td:nth-child(3) { background: var(--accent-soft); }
     .semantic-table tr.state-insert td { background: var(--good-soft); }
     .semantic-table tr.state-delete td { background: var(--warn-soft); }
+    .semantic-table tr.structural-row-conflict td { background: #fff0f1; border-top: 1px solid #bd2939; border-bottom: 1px solid #bd2939; cursor: pointer; }
+    .semantic-table tr.structural-row-conflict td:first-child { border-left: 4px solid #bd2939; }
+    .semantic-table tr.structural-row-conflict:hover td { background: #ffe3e6; }
+    .semantic-table tr.structural-row-change td { border-top: 1px solid #0f9f6e; border-bottom: 1px solid #0f9f6e; cursor: pointer; }
+    .semantic-table tr.structural-row-change td:first-child { border-left: 4px solid #0f9f6e; }
+    .semantic-table tr.structural-row-change:hover td { background: #ecfdf5; }
+    .semantic-table td.semantic-decision { cursor: pointer; }
+    .semantic-table td.semantic-decision:hover { box-shadow: inset 0 0 0 2px var(--accent); }
+    .semantic-coordinate { display: block; margin-bottom: 2px; color: var(--accent); font: 700 9px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
     .semantic-empty { color: #a1a9b8; font-style: italic; }
 
     .empty { padding: 34px; text-align: center; color: var(--muted); }
@@ -220,7 +255,7 @@
       .choices, .rendered-grid { grid-template-columns: 1fr; }
       .source-picker-choices { grid-template-columns: 1fr; }
       .choice, .rendered-pane { border-right: 0; border-bottom: 1px solid var(--line); }
-      .rendered-pane iframe, #resultFrame { height: 42vh; min-height: 240px; }
+      .rendered-pane .frame-coordinate-shell, .result-frame-wrap > .frame-coordinate-shell { height: 42vh; min-height: 240px; }
       .result-body { grid-template-columns: 1fr; }
       .source-picker { min-height: auto; max-height: none; border-top: 1px solid var(--line); border-left: 0; }
     }
@@ -232,6 +267,10 @@
       <h1 id="documentTitle">MXL merge</h1>
     </div>
     <div class="header-tools">
+      <div class="history-controls" aria-label="Decision history">
+        <button type="button" id="undoButton" title="Undo last decision (Ctrl/Cmd+Z)" disabled>Undo</button>
+        <button type="button" id="redoButton" title="Redo decision (Ctrl/Cmd+Shift+Z)" disabled>Redo</button>
+      </div>
       <div class="conflict-nav" aria-label="Conflict navigation">
         <button type="button" id="previousConflict" title="Previous conflict">‹</button>
         <span class="conflict-position" id="conflictPosition">0 / 0</span>
@@ -282,7 +321,12 @@
         </div>
         <div class="result-body">
           <div class="result-frame-wrap">
-            <iframe id="resultFrame" title="Merged MXL preview" sandbox="allow-same-origin"></iframe>
+            <div class="frame-coordinate-shell">
+              <div class="frame-coordinate-corner" aria-hidden="true"></div>
+              <div class="frame-coordinate-columns" aria-label="Column coordinates"></div>
+              <div class="frame-coordinate-rows" aria-label="Row coordinates"></div>
+              <iframe id="resultFrame" title="Merged MXL preview" sandbox="allow-same-origin"></iframe>
+            </div>
             <div class="result-overlay" id="resultOverlay"></div>
           </div>
           <div class="source-picker" id="sourcePicker"><div class="source-picker-empty">Click a highlighted field or use ‹ › to navigate conflicts.</div></div>
@@ -291,7 +335,7 @@
     </section>
 
     <div class="section-title">
-      <div><h2>Conflict decisions</h2><p>Choose a side for every conflict. Non-overlapping changes are merged automatically.</p></div>
+      <div><h2>Merge decisions</h2><p>Manual conflicts require a choice. One-sided changes are preselected and can be overridden from the previews.</p></div>
       <div class="bulk-actions">
         <button class="button ghost" data-all="local">All local</button>
         <button class="button ghost" data-all="remote">All remote</button>
@@ -311,14 +355,22 @@
     const model = __MXL_MODEL__;
     const token = __MXL_TOKEN__;
     const apiBase = `/api/${token}`;
-    const resolutions = {};
+    const resolutions = Object.fromEntries(
+      model.conflicts
+        .filter(conflict => conflict.default_choice)
+        .map(conflict => [conflict.key, {choice: conflict.default_choice}])
+    );
     const semanticRows = model.previews.semantic.rows;
     const conflictByKey = Object.fromEntries(model.conflicts.map(conflict => [conflict.key, conflict]));
     const sourceFrames = {};
     const sourceElements = {base: new Map(), local: new Map(), remote: new Map()};
     const resultElements = new Map();
-    const conflictKeys = model.conflicts.map(conflict => conflict.key);
-    const exactPreviewAvailable = Boolean(model.previews.rendered.provider && model.previews.rendered.available.length === 3);
+    const requiresManualChoice = conflict => conflict.requires_choice !== false;
+    const conflictKeys = model.conflicts
+      .filter(requiresManualChoice)
+      .map(conflict => conflict.key);
+    let exactPreviewAvailable = Boolean(model.previews.rendered.provider && model.previews.rendered.available.length === 3);
+    let previewPollScheduled = false;
     let viewMode = "changes";
     let dimUnchanged = true;
     let activeConflictKey = null;
@@ -326,11 +378,21 @@
     let exactPreviewGeneration = 0;
     let previewZoom = 1;
     let sessionEnded = false;
+    let sourceScrollSyncSuspended = false;
+    let pendingResultFocusKey = null;
+    let activeFieldId = null;
+    let draftRowStructurePreference = null;
+    const undoStack = [];
+    const redoStack = [];
+    const historyLimit = 100;
+    let activeHistoryGroup = null;
 
     const escapeText = value => value === undefined || value === null ? "" : String(value);
     const conflictsNode = document.getElementById("conflicts");
     const saveButton = document.getElementById("saveButton");
     const cancelButton = document.getElementById("cancelButton");
+    const undoButton = document.getElementById("undoButton");
+    const redoButton = document.getElementById("redoButton");
     const toast = document.getElementById("toast");
 
     function showToast(message, error = false) {
@@ -339,21 +401,162 @@
       setTimeout(() => toast.className = "toast", 3200);
     }
 
+    function captureDecisionState() {
+      return {
+        resolutions: JSON.parse(JSON.stringify(resolutions)),
+        draftRowStructurePreference
+      };
+    }
+
+    function decisionStateSignature(state) {
+      return JSON.stringify(state);
+    }
+
+    function updateHistoryControls() {
+      undoButton.disabled = sessionEnded || undoStack.length === 0;
+      redoButton.disabled = sessionEnded || redoStack.length === 0;
+      undoButton.title = undoStack.length
+        ? `Undo: ${undoStack[undoStack.length - 1].label} (Ctrl/Cmd+Z)`
+        : "Nothing to undo (Ctrl/Cmd+Z)";
+      redoButton.title = redoStack.length
+        ? `Redo: ${redoStack[redoStack.length - 1].label} (Ctrl/Cmd+Shift+Z)`
+        : "Nothing to redo (Ctrl/Cmd+Shift+Z)";
+    }
+
+    function commitDecisionHistory(previousState, label, group = null) {
+      if (
+        decisionStateSignature(previousState) ===
+        decisionStateSignature(captureDecisionState())
+      ) {
+        return false;
+      }
+      if (!group || activeHistoryGroup !== group) {
+        undoStack.push({state: previousState, label});
+        if (undoStack.length > historyLimit) undoStack.shift();
+      }
+      redoStack.length = 0;
+      activeHistoryGroup = group;
+      updateHistoryControls();
+      return true;
+    }
+
+    function closeHistoryGroup(group) {
+      if (!group || activeHistoryGroup === group) activeHistoryGroup = null;
+    }
+
+    function restoreDecisionState(state) {
+      Object.keys(resolutions).forEach(key => delete resolutions[key]);
+      Object.entries(state.resolutions || {}).forEach(([key, resolution]) => {
+        resolutions[key] = JSON.parse(JSON.stringify(resolution));
+      });
+      draftRowStructurePreference = state.draftRowStructurePreference ?? null;
+      pendingResultFocusKey = activeConflictKey;
+      updateDecisionControls();
+      updateProgress();
+      updateSourceSelections();
+      if (activeConflictKey) showFieldPicker(activeConflictKey, false, activeFieldId);
+      showDraftResult();
+      exactPreviewGeneration += 1;
+    }
+
+    function undoDecision() {
+      if (sessionEnded || !undoStack.length) return;
+      if (document.activeElement instanceof HTMLTextAreaElement) {
+        document.activeElement.blur();
+      }
+      const entry = undoStack.pop();
+      redoStack.push({
+        state: captureDecisionState(),
+        label: entry.label
+      });
+      activeHistoryGroup = null;
+      restoreDecisionState(entry.state);
+      updateHistoryControls();
+      showToast(`Undid: ${entry.label}`);
+    }
+
+    function redoDecision() {
+      if (sessionEnded || !redoStack.length) return;
+      if (document.activeElement instanceof HTMLTextAreaElement) {
+        document.activeElement.blur();
+      }
+      const entry = redoStack.pop();
+      undoStack.push({
+        state: captureDecisionState(),
+        label: entry.label
+      });
+      activeHistoryGroup = null;
+      restoreDecisionState(entry.state);
+      updateHistoryControls();
+      showToast(`Redid: ${entry.label}`);
+    }
+
     function selectedCount() {
       return model.conflicts.filter(conflict => resolutions[conflict.key]).length;
+    }
+
+    function wholeDocumentChoice() {
+      const choice = resolutions.document?.choice;
+      return ["base", "local", "remote"].includes(choice) ? choice : null;
     }
 
     function updateProgress() {
       const total = model.conflicts.length;
       const selected = selectedCount();
-      const complete = total === 0 || selected === total;
+      const rowSource = selectedRowStructureSource();
+      const complete = Boolean(wholeDocumentChoice()) ||
+        ((total === 0 || selected === total) && rowSource !== "");
       saveButton.disabled = sessionEnded || !complete;
       const exactButton = document.getElementById("refreshExactButton");
       exactButton.disabled = sessionEnded || !complete || !exactPreviewAvailable;
     }
 
     function allConflictsResolved() {
-      return model.conflicts.every(conflict => resolutions[conflict.key]);
+      return Boolean(wholeDocumentChoice()) ||
+        (
+          model.conflicts.every(conflict => resolutions[conflict.key]) &&
+          selectedRowStructureSource() !== ""
+        );
+    }
+
+    function selectedRowStructureSource() {
+      const documentChoice = wholeDocumentChoice();
+      if (documentChoice) return documentChoice;
+      const rowConflicts = model.conflicts.filter(conflict => conflict.kind === "row");
+      if (!rowConflicts.length) return null;
+      if (rowConflicts.some(conflict => !resolutions[conflict.key])) return undefined;
+      return ["local", "remote", "base"].find(candidate => rowConflicts.every(conflict => {
+        const choice = resolutions[conflict.key]?.choice;
+        return conflict.states?.[candidate] === conflict.states?.[choice];
+      })) || "";
+    }
+
+    function draftRowStructureSource() {
+      const selected = selectedRowStructureSource();
+      if (selected && selected !== "") return selected;
+      if (
+        selected === "" &&
+        ["base", "local", "remote"].includes(draftRowStructurePreference)
+      ) {
+        return draftRowStructurePreference;
+      }
+      if (selected === "") return "base";
+      const decided = model.conflicts
+        .filter(conflict => conflict.kind === "row" && resolutions[conflict.key])
+        .map(conflict => ({
+          conflict,
+          choice: resolutions[conflict.key].choice
+        }));
+      if (!decided.length) return "base";
+      const preferredSources = [
+        ...new Set(decided.map(item => item.choice)),
+        "local",
+        "remote",
+        "base"
+      ];
+      return preferredSources.find(candidate => decided.every(item =>
+        item.conflict.states?.[candidate] === item.conflict.states?.[item.choice]
+      )) || "base";
     }
 
     function normalizeFieldText(value) {
@@ -361,13 +564,276 @@
     }
 
     function frameContentElements(doc) {
-      const preferred = Array.from(doc.querySelectorAll("td, th"));
-      const fallback = Array.from(doc.body?.querySelectorAll("div, span, p, font") || []).filter(node =>
-        !node.closest("td, th") &&
-        !Array.from(node.children).some(child => normalizeFieldText(child.innerText || child.textContent))
-      );
-      const elements = preferred.length ? preferred.concat(fallback) : fallback;
-      return elements.filter(node => normalizeFieldText(node.innerText || node.textContent));
+      return Array.from(doc.body?.querySelectorAll("td, th, div, span, p, font") || []).filter(node => {
+        if (!normalizeFieldText(node.innerText || node.textContent)) return false;
+        if (node.matches("td, th")) return true;
+        if (node.closest("td, th")) return false;
+        return !Array.from(node.children).some(child =>
+          normalizeFieldText(child.innerText || child.textContent)
+        );
+      });
+    }
+
+    function createFrameCoordinateShell(frame) {
+      const shell = document.createElement("div");
+      shell.className = "frame-coordinate-shell";
+      const corner = document.createElement("div");
+      corner.className = "frame-coordinate-corner";
+      corner.setAttribute("aria-hidden", "true");
+      const columns = document.createElement("div");
+      columns.className = "frame-coordinate-columns";
+      columns.setAttribute("aria-label", "Column coordinates");
+      const rows = document.createElement("div");
+      rows.className = "frame-coordinate-rows";
+      rows.setAttribute("aria-label", "Row coordinates");
+      shell.append(corner, columns, rows, frame);
+      return shell;
+    }
+
+    function parseCoordinate(value) {
+      const match = /^R(\d+)C(\d+)$/i.exec(escapeText(value).trim());
+      return match ? {row: Number(match[1]), column: Number(match[2])} : null;
+    }
+
+    function median(values) {
+      const sorted = [...values].sort((left, right) => left - right);
+      if (!sorted.length) return 0;
+      const middle = Math.floor(sorted.length / 2);
+      return sorted.length % 2
+        ? sorted[middle]
+        : (sorted[middle - 1] + sorted[middle]) / 2;
+    }
+
+    function coordinateAnchors(elements, side, valueResolver = row => row[side]) {
+      const elementsByText = new Map();
+      elements.forEach(element => {
+        const text = normalizeFieldText(element.innerText || element.textContent);
+        if (!text) return;
+        if (!elementsByText.has(text)) elementsByText.set(text, []);
+        elementsByText.get(text).push(element);
+      });
+      const occurrences = new Map();
+      const anchors = [];
+      semanticRows.forEach(row => {
+        const coordinate = parseCoordinate(coordinateForRow(row, side));
+        const expected = normalizeFieldText(valueResolver(row));
+        if (!coordinate || !expected) return;
+        const occurrence = occurrences.get(expected) || 0;
+        occurrences.set(expected, occurrence + 1);
+        const element = elementsByText.get(expected)?.[occurrence];
+        if (element) anchors.push({element, ...coordinate});
+      });
+      return anchors;
+    }
+
+    function axisSegments(groups, minimumIndex = null) {
+      const known = [...groups.entries()]
+        .map(([index, bounds]) => ({
+          index,
+          start: median(bounds.map(bound => bound.start)),
+          end: median(bounds.map(bound => bound.end))
+        }))
+        .sort((left, right) => left.index - right.index);
+      if (!known.length) return [];
+      const positions = new Map(known.map(item => [item.index, item.start]));
+      const knownEnds = new Map(known.map(item => [item.index, item.end]));
+      for (let knownIndex = 0; knownIndex < known.length - 1; knownIndex += 1) {
+        const current = known[knownIndex];
+        const next = known[knownIndex + 1];
+        const gap = next.index - current.index;
+        if (gap <= 1) continue;
+        const step = (next.start - current.start) / gap;
+        for (let offset = 1; offset < gap; offset += 1) {
+          positions.set(current.index + offset, current.start + step * offset);
+        }
+      }
+      const first = known[0].index;
+      const last = known[known.length - 1].index;
+      const fallbackSize = median(
+        known.map(item => item.end - item.start).filter(size => size > 0)
+      ) || 18;
+      if (minimumIndex !== null && minimumIndex < known[0].index) {
+        const firstKnown = known[0];
+        const missing = firstKnown.index - minimumIndex;
+        const step = firstKnown.start > 0
+          ? firstKnown.start / missing
+          : fallbackSize;
+        for (let index = minimumIndex; index < firstKnown.index; index += 1) {
+          positions.set(index, firstKnown.start - (firstKnown.index - index) * step);
+        }
+      }
+      const segments = [];
+      for (let index = minimumIndex ?? first; index <= last; index += 1) {
+        const start = positions.get(index);
+        if (start === undefined) continue;
+        const knownEnd = knownEnds.get(index);
+        const nextStart = positions.get(index + 1);
+        const end = knownEnd !== undefined && nextStart !== undefined
+          ? Math.min(knownEnd, nextStart)
+          : knownEnd ?? nextStart ?? (start + fallbackSize);
+        segments.push({index, start, size: Math.max(12, end - start)});
+      }
+      return segments;
+    }
+
+    function renderFrameCoordinateRulers(frame) {
+      const shell = frame.closest(".frame-coordinate-shell");
+      const columnsNode = shell?.querySelector(".frame-coordinate-columns");
+      const rowsNode = shell?.querySelector(".frame-coordinate-rows");
+      const doc = frame.contentDocument;
+      const anchors = frame._mxlCoordinateAnchors || [];
+      if (!columnsNode || !rowsNode || !doc?.body) return;
+      const rowGroups = new Map();
+      const activeRows = new Set();
+      const activeColumns = new Set();
+      const geometryByRow = new Map();
+      const viewportWidth = frame.clientWidth;
+      const viewportHeight = frame.clientHeight;
+      anchors.forEach(anchor => {
+        if (!anchor.element.isConnected) return;
+        const rect = anchor.element.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const rowElement = anchor.element.closest("tr") || anchor.element;
+        const rowRect = rowElement.getBoundingClientRect();
+        if (!rowGroups.has(anchor.row)) rowGroups.set(anchor.row, []);
+        rowGroups.get(anchor.row).push({start: rowRect.top, end: rowRect.bottom});
+        if (!geometryByRow.has(anchor.row)) geometryByRow.set(anchor.row, []);
+        geometryByRow.get(anchor.row).push({anchor, rect, rowRect});
+        if (
+          anchor.element.classList.contains("mxl-active-conflict") ||
+          anchor.element.closest(".mxl-active-conflict")
+        ) {
+          activeRows.add(anchor.row);
+          activeColumns.add(anchor.column);
+        }
+      });
+      const referenceRow = [...geometryByRow.entries()]
+        .map(([row, items]) => ({
+          row,
+          items,
+          columnCount: new Set(items.map(item => item.anchor.column)).size,
+          visible: items.some(item => item.rowRect.bottom > 0 && item.rowRect.top < viewportHeight),
+          distance: Math.min(...items.map(item => Math.abs(item.rowRect.top)))
+        }))
+        .sort((left, right) =>
+          Number(right.visible) - Number(left.visible) ||
+          right.columnCount - left.columnCount ||
+          left.distance - right.distance ||
+          left.row - right.row
+        )[0] || null;
+      const columnGroups = new Map();
+      (referenceRow?.items || []).forEach(({anchor, rect}) => {
+        if (!columnGroups.has(anchor.column)) columnGroups.set(anchor.column, []);
+        columnGroups.get(anchor.column).push({start: rect.left, end: rect.right});
+      });
+      const placeholderBands = Array.from(
+        doc.querySelectorAll(".mxl-row-placeholder, .mxl-row-placeholder-block")
+      ).map(marker => {
+        const rect = marker.getBoundingClientRect();
+        const coordinate = parseCoordinate(
+          `${marker.dataset.mxlRowCoordinate || ""}C1`
+        );
+        return {
+          start: rect.top,
+          end: rect.bottom,
+          row: coordinate?.row || null,
+          state: marker.dataset.mxlRowPlaceholderState || "absent",
+          automatic: marker.dataset.mxlRowPlaceholderAutomatic === "true",
+          active: marker.classList.contains("mxl-active-conflict")
+        };
+      }).filter(band => band.end > band.start);
+      const columnFragment = document.createDocumentFragment();
+      axisSegments(columnGroups, 1).forEach(segment => {
+        if (segment.start + segment.size <= 0 || segment.start >= viewportWidth) return;
+        const label = document.createElement("span");
+        label.className = `frame-coordinate-label${activeColumns.has(segment.index) ? " active" : ""}`;
+        label.textContent = String(segment.index);
+        label.title = `C${segment.index}`;
+        label.style.left = `${segment.start}px`;
+        label.style.width = `${segment.size}px`;
+        columnFragment.append(label);
+      });
+      const rowFragment = document.createDocumentFragment();
+      axisSegments(rowGroups).forEach(segment => {
+        let start = segment.start;
+        let end = segment.start + segment.size;
+        placeholderBands.forEach(band => {
+          if (band.start <= start && band.end > start) start = band.end;
+          else if (band.start > start && band.start < end) end = band.start;
+        });
+        if (end <= start || end <= 0 || start >= viewportHeight) return;
+        const label = document.createElement("span");
+        label.className = `frame-coordinate-label${activeRows.has(segment.index) ? " active" : ""}`;
+        label.textContent = String(segment.index);
+        label.title = `R${segment.index}`;
+        label.style.top = `${start}px`;
+        label.style.height = `${end - start}px`;
+        rowFragment.append(label);
+      });
+      placeholderBands.forEach(band => {
+        if (band.end <= 0 || band.start >= viewportHeight) return;
+        const label = document.createElement("span");
+        label.className = [
+          "frame-coordinate-label",
+          "placeholder",
+          band.automatic ? "automatic" : "",
+          band.active ? "active" : ""
+        ].filter(Boolean).join(" ");
+        label.textContent = band.state === "unresolved" ? "?" : "×";
+        label.title = band.row
+          ? `R${band.row} · ${band.state === "unresolved" ? "unresolved row" : "row absent on this side"}`
+          : "Structural row placeholder";
+        label.style.top = `${band.start}px`;
+        label.style.height = `${band.end - band.start}px`;
+        rowFragment.append(label);
+      });
+      columnsNode.replaceChildren(columnFragment);
+      rowsNode.replaceChildren(rowFragment);
+    }
+
+    function scheduleFrameCoordinateRulers(frame) {
+      if (frame._mxlCoordinateRenderScheduled) return;
+      frame._mxlCoordinateRenderScheduled = true;
+      requestAnimationFrame(() => {
+        frame._mxlCoordinateRenderScheduled = false;
+        renderFrameCoordinateRulers(frame);
+      });
+    }
+
+    function scheduleAllCoordinateRulers() {
+      [...Object.values(sourceFrames), document.getElementById("resultFrame")]
+        .filter(Boolean)
+        .forEach(scheduleFrameCoordinateRulers);
+    }
+
+    function installFrameCoordinateRulers(
+      frame,
+      side,
+      elements,
+      valueResolver = row => row[side]
+    ) {
+      frame.dataset.coordinateSide = side;
+      frame._mxlCoordinateAnchors = coordinateAnchors(elements, side, valueResolver);
+      const frameWindow = frame.contentWindow;
+      const frameDocument = frame.contentDocument;
+      if (frame._mxlCoordinateDocument !== frameDocument) {
+        frame._mxlCoordinateWindow = frameWindow;
+        frame._mxlCoordinateDocument = frameDocument;
+        const refreshRulers = () => scheduleFrameCoordinateRulers(frame);
+        const refreshAfterInput = () =>
+          requestAnimationFrame(() => scheduleFrameCoordinateRulers(frame));
+        frameWindow.addEventListener("scroll", refreshRulers, {passive: true});
+        frameWindow.addEventListener("resize", refreshRulers, {passive: true});
+        frameDocument.addEventListener("scroll", refreshRulers, {
+          capture: true,
+          passive: true
+        });
+        frameDocument.addEventListener("wheel", refreshAfterInput, {
+          capture: true,
+          passive: true
+        });
+      }
+      scheduleFrameCoordinateRulers(frame);
     }
 
     function installFrameStyles(doc) {
@@ -381,18 +847,36 @@
         html[data-mxl-dim="on"][data-mxl-mode="changes"] .mxl-content:not(.mxl-change) { opacity: .72 !important; filter: grayscale(1); }
         html[data-mxl-dim="on"][data-mxl-mode="conflicts"] .mxl-content:not(.mxl-conflict) { opacity: .58 !important; filter: grayscale(1); }
         .mxl-change { --mxl-color: #d97706; position: relative !important; z-index: 2147483001 !important; opacity: 1 !important; outline: 2px solid var(--mxl-color) !important; outline-offset: -2px; background-color: #fff !important; }
+        .mxl-change[data-mxl-chip] { padding-top: 13px !important; }
+        .mxl-change[data-mxl-chip]::before { content: attr(data-mxl-chip); position: absolute !important; top: 1px !important; right: 2px !important; z-index: 2147483003 !important; padding: 1px 3px !important; border-radius: 3px !important; color: #fff !important; background: var(--mxl-color, #475569) !important; font: 700 8px/1.05 ui-monospace, SFMono-Regular, Menlo, monospace !important; letter-spacing: 0 !important; white-space: nowrap !important; pointer-events: none !important; }
+        .mxl-change[data-mxl-chip-choice="base"]::before { background: #475569 !important; }
+        .mxl-change[data-mxl-chip-choice="local"]::before { background: #2563eb !important; }
+        .mxl-change[data-mxl-chip-choice="remote"]::before { background: #0f9f6e !important; }
+        .mxl-change[data-mxl-chip-choice="manual"]::before { background: #7c3aed !important; }
         html[data-mxl-mode="conflicts"] .mxl-change:not(.mxl-conflict) { z-index: auto !important; outline-color: transparent !important; }
         .mxl-state-local { --mxl-color: #2563eb; }
         .mxl-state-remote { --mxl-color: #0f9f6e; }
         .mxl-state-both { --mxl-color: #7c3aed; }
         .mxl-state-conflict, .mxl-state-insert-conflict, .mxl-state-delete-conflict { --mxl-color: #bd2939; }
         .mxl-state-insert, .mxl-state-delete { --mxl-color: #d97706; }
+        .mxl-row-conflict { --mxl-color: #bd2939 !important; background: #fff0f1 !important; outline: none !important; }
+        tr.mxl-row-conflict-line { outline: 2px solid #bd2939 !important; outline-offset: -2px !important; }
+        tr.mxl-row-conflict-line > td, tr.mxl-row-conflict-line > th { background: #fff0f1 !important; }
+        .mxl-row-change { outline: none !important; }
+        tr.mxl-row-change-line { outline: 2px solid var(--mxl-color, #d97706) !important; outline-offset: -2px !important; }
         .mxl-clickable { cursor: pointer !important; }
         .mxl-clickable:hover { box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--mxl-color), white 35%) !important; }
         .mxl-selected-source { box-shadow: inset 0 0 0 3px var(--mxl-color) !important; }
         .mxl-active-conflict { z-index: 2147483002 !important; outline: 4px solid #facc15 !important; outline-offset: -4px !important; box-shadow: 0 0 0 3px #111827, 0 0 0 7px rgba(250, 204, 21, .55), inset 0 0 0 2px #111827 !important; filter: none !important; opacity: 1 !important; }
         .mxl-unresolved { min-width: 88px !important; min-height: 24px !important; cursor: pointer !important; background: repeating-linear-gradient(135deg, #fff1f2, #fff1f2 7px, #ffe3e6 7px, #ffe3e6 14px) !important; }
         .mxl-unresolved::after { content: attr(data-mxl-placeholder); display: inline-block; padding: 3px 6px; color: #9f2434; font: 11px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; white-space: nowrap; }
+        .mxl-row-provisional-hidden { display: none !important; }
+        .mxl-row-placeholder { position: relative !important; z-index: 2147483001 !important; cursor: pointer !important; }
+        .mxl-row-placeholder > td, .mxl-row-placeholder-block { height: 32px !important; border: 2px dashed #bd2939 !important; padding: 6px 10px !important; color: #8f1f30 !important; background: repeating-linear-gradient(135deg, #fff0f1, #fff0f1 8px, #ffe3e6 8px, #ffe3e6 16px) !important; font: 700 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important; text-align: left !important; }
+        .mxl-row-change-placeholder > td, .mxl-row-change-placeholder.mxl-row-placeholder-block { border-color: var(--mxl-color, #0f9f6e) !important; color: #087a56 !important; background: #ecfdf5 !important; }
+        .mxl-row-placeholder:hover > td, .mxl-row-placeholder-block:hover { box-shadow: inset 0 0 0 2px #bd2939 !important; }
+        .mxl-row-placeholder.mxl-active-conflict, .mxl-row-placeholder-block.mxl-active-conflict { outline: none !important; box-shadow: none !important; }
+        .mxl-row-placeholder.mxl-active-conflict > td, .mxl-row-placeholder-block.mxl-active-conflict { box-shadow: inset 3px 0 #bd2939 !important; }
       `;
       (doc.head || doc.documentElement).append(style);
     }
@@ -419,10 +903,251 @@
       return occurrence;
     }
 
-    function markElement(element, row) {
-      element.classList.add("mxl-content", "mxl-change", `mxl-state-${row.state}`);
-      if (row.conflict_key) element.classList.add("mxl-conflict", "mxl-clickable");
+    function rowChangeVisualState(conflict) {
+      if (!conflict) return "insert";
+      const localChanged = conflict.states?.local !== conflict.states?.base;
+      const remoteChanged = conflict.states?.remote !== conflict.states?.base;
+      if (localChanged && remoteChanged) return "both";
+      if (localChanged) return "local";
+      if (remoteChanged) return "remote";
+      return conflict.default_choice || "insert";
+    }
+
+    function coordinateForRow(row, side) {
+      return row?.coordinates?.[side] || "";
+    }
+
+    function conflictCoordinate(conflict, side) {
+      const coordinates = conflict?.coordinates?.[side] || [];
+      if (coordinates.length === 1) return coordinates[0];
+      if (coordinates.length > 1) {
+        return coordinates.length <= 3
+          ? coordinates.join(", ")
+          : `${coordinates[0]}…${coordinates[coordinates.length - 1]}`;
+      }
+      const rowNumber = conflict?.row_coordinates?.[side];
+      if (rowNumber !== null && rowNumber !== undefined) return `R${rowNumber}`;
+      if (conflict?.kind === "row" && conflict?.row_number) {
+        return `R${conflict.row_number} · absent`;
+      }
+      return "";
+    }
+
+    function rowPositionCoordinate(conflict, side) {
+      const rowNumber = conflict?.row_coordinates?.[side];
+      const logicalRow = rowNumber ?? conflict?.row_number;
+      return logicalRow ? `R${logicalRow}` : "";
+    }
+
+    function selectedConflictCoordinate(conflict, fieldId = null) {
+      if (!conflict || conflict.kind === "structural") return "";
+      const selectedRow = fieldId
+        ? semanticRows.find(row => row.id === fieldId)
+        : null;
+      const selectedSide = wholeDocumentChoice() || resolutions[conflict.key]?.choice;
+      if (selectedSide && selectedSide !== "manual") {
+        return coordinateForRow(selectedRow, selectedSide) ||
+          conflictCoordinate(conflict, selectedSide);
+      }
+      for (const side of ["base", "local", "remote"]) {
+        const coordinate = coordinateForRow(selectedRow, side) ||
+          conflictCoordinate(conflict, side);
+        if (coordinate && !coordinate.endsWith("· absent")) return coordinate;
+      }
+      return "";
+    }
+
+    function setElementChip(element, choice = null) {
+      if (!element) return;
+      if (["base", "local", "remote", "manual"].includes(choice)) {
+        element.dataset.mxlChip = choice.toUpperCase();
+        element.dataset.mxlChipChoice = choice;
+        return;
+      }
+      delete element.dataset.mxlChipChoice;
+      const coordinate = element.dataset.mxlCoordinate || "";
+      if (coordinate) element.dataset.mxlChip = coordinate;
+      else delete element.dataset.mxlChip;
+    }
+
+    function resolutionForRow(row) {
+      const documentChoice = wholeDocumentChoice();
+      if (documentChoice) return {choice: documentChoice};
+      const hasSeparateFieldDecision =
+        row?.conflict_key &&
+        row.conflict_key !== row.row_conflict_key &&
+        conflictByKey[row.conflict_key];
+      if (hasSeparateFieldDecision) return resolutions[row.conflict_key] || null;
+      const decisionKey = row?.row_conflict_key || row?.conflict_key;
+      return decisionKey ? resolutions[decisionKey] || null : null;
+    }
+
+    function markElement(element, row, coordinateSide) {
+      const rowDecision = row.row_conflict_key
+        ? conflictByKey[row.row_conflict_key]
+        : null;
+      const decision = row.conflict_key
+        ? conflictByKey[row.conflict_key]
+        : null;
+      const automaticDecision = decision?.requires_choice === false;
+      const automaticRowChange = rowDecision?.requires_choice === false;
+      const visualState = automaticRowChange
+        ? rowChangeVisualState(rowDecision)
+        : row.state;
+      element.classList.add("mxl-content", "mxl-change", `mxl-state-${visualState}`);
+      if (row.conflict_key && !automaticDecision) {
+        element.classList.add("mxl-conflict", "mxl-clickable");
+      } else if (row.conflict_key) {
+        element.classList.add("mxl-clickable");
+      }
+      if (row.row_conflict_key) {
+        element.classList.add(automaticRowChange ? "mxl-row-change" : "mxl-row-conflict");
+        const tableRow = element.closest("tr");
+        if (tableRow) {
+          tableRow.classList.add(
+            automaticRowChange ? "mxl-row-change-line" : "mxl-row-conflict-line",
+            `mxl-state-${visualState}`,
+            "mxl-clickable"
+          );
+          tableRow.dataset.mxlRowConflictKey = row.row_conflict_key;
+        }
+      }
       element.dataset.mxlField = row.id;
+      const coordinate = coordinateForRow(row, coordinateSide);
+      if (coordinate) element.dataset.mxlCoordinate = coordinate;
+      else delete element.dataset.mxlCoordinate;
+      setElementChip(element);
+    }
+
+    function conflictVisualElement(element) {
+      if (!element) return null;
+      return element.classList.contains("mxl-row-conflict") ||
+        element.classList.contains("mxl-row-change")
+        ? element.closest("tr") || element
+        : element;
+    }
+
+    function findConflictBoundaryElement(elements, conflict, side) {
+      const fieldIds = new Set(conflict.field_ids || []);
+      const conflictIndexes = semanticRows
+        .map((row, index) => fieldIds.has(row.id) ? index : -1)
+        .filter(index => index >= 0);
+      if (!conflictIndexes.length) return {element: null, after: false};
+      const first = Math.min(...conflictIndexes);
+      const last = Math.max(...conflictIndexes);
+      function findNeighbour(start, end, step) {
+        for (let index = start; index !== end; index += step) {
+          const row = semanticRows[index];
+          if (row[side] === null || row[side] === undefined) continue;
+          const element = findFieldElement(
+            elements,
+            row[side],
+            new Set(),
+            rowOccurrence(row, side)
+          );
+          if (element) return element;
+        }
+        return null;
+      }
+
+      const previous = findNeighbour(first - 1, -1, -1);
+      const next = findNeighbour(last + 1, semanticRows.length, 1);
+      const previousRow = previous?.closest("tr");
+      const nextRow = next?.closest("tr");
+
+      // Prefer inserting between rows of the same table. If the next semantic
+      // value is a heading outside that table, stay after the previous row
+      // instead of placing the deletion marker after the complete table.
+      if (previousRow && nextRow && previousRow.closest("table") === nextRow.closest("table")) {
+        return {element: nextRow, after: false};
+      }
+      if (previousRow) return {element: previousRow, after: true};
+      if (nextRow) return {element: nextRow, after: false};
+      if (next) return {element: next, after: false};
+      if (previous) return {element: previous, after: true};
+      return {element: null, after: false};
+    }
+
+    function renderRowConflictPlaceholders(doc, displaySide, lookupSide, elements) {
+      doc.querySelectorAll(".mxl-row-placeholder, .mxl-row-placeholder-block").forEach(node => node.remove());
+      doc.querySelectorAll(".mxl-row-provisional-hidden").forEach(node =>
+        node.classList.remove("mxl-row-provisional-hidden")
+      );
+      const conflicts = model.conflicts.filter(conflict => conflict.kind === "row");
+      if (!conflicts.length || !doc.body) return;
+      if (displaySide === "result" && wholeDocumentChoice()) return;
+      conflicts.forEach(conflict => {
+        const choice = displaySide === "result"
+          ? resolutions[conflict.key]?.choice
+          : displaySide;
+        const state = choice ? conflict.states?.[choice] : null;
+        const unresolvedResult = displaySide === "result" && !choice;
+        if (!unresolvedResult && state !== "absent") return;
+        const automaticRowChange = conflict.requires_choice === false;
+        const visualState = rowChangeVisualState(conflict);
+        const boundary = findConflictBoundaryElement(elements, conflict, lookupSide);
+        const representedRow = unresolvedResult
+          ? (conflict.field_ids || [])
+              .map(fieldId => resultElements.get(fieldId)?.closest("tr"))
+              .find(Boolean)
+          : null;
+        const tableRow = representedRow || boundary.element?.closest("tr");
+        const message = unresolvedResult
+          ? `Row ${conflict.row_number ?? ""} unresolved — choose Base, Local, or Remote`
+          : automaticRowChange
+            ? `Row ${conflict.row_number ?? ""} absent — automatic ${conflict.default_choice} row change`
+            : `Row ${conflict.row_number ?? ""} deleted — choose Base, Local, or Remote`;
+        const rowCoordinate = rowPositionCoordinate(
+          conflict,
+          choice && choice !== "manual" ? choice : lookupSide
+        );
+        const coordinateMessage = rowCoordinate
+          ? `${rowCoordinate} · ${message}`
+          : message;
+        let marker;
+        if (tableRow?.parentNode) {
+          marker = doc.createElement("tr");
+          marker.className = automaticRowChange
+            ? `mxl-row-placeholder mxl-row-change-placeholder mxl-change mxl-state-${visualState}`
+            : "mxl-row-placeholder mxl-conflict";
+          const cell = doc.createElement("td");
+          const tableRows = Array.from(tableRow.closest("table")?.rows || []);
+          cell.colSpan = Math.max(
+            1,
+            tableRow.cells?.length || 0,
+            ...tableRows.map(row => row.cells?.length || 0)
+          );
+          cell.textContent = coordinateMessage;
+          marker.append(cell);
+          if (representedRow) {
+            representedRow.before(marker);
+            representedRow.classList.add("mxl-row-provisional-hidden");
+          } else if (boundary.after) {
+            tableRow.after(marker);
+          } else {
+            tableRow.before(marker);
+          }
+        } else {
+          if (!boundary.element) return;
+          marker = doc.createElement("div");
+          marker.className = automaticRowChange
+            ? `mxl-row-placeholder-block mxl-row-change-placeholder mxl-change mxl-state-${visualState}`
+            : "mxl-row-placeholder-block mxl-conflict";
+          marker.textContent = coordinateMessage;
+          if (boundary.after) boundary.element.after(marker);
+          else boundary.element.before(marker);
+        }
+        marker.dataset.mxlConflictKey = conflict.key;
+        marker.dataset.mxlRowCoordinate = rowCoordinate;
+        marker.dataset.mxlRowPlaceholderState = unresolvedResult ? "unresolved" : "absent";
+        marker.dataset.mxlRowPlaceholderAutomatic = String(automaticRowChange);
+        marker.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          showFieldPicker(conflict.key, true, null);
+          if (displaySide !== "result") choose(conflict.key, displaySide);
+        });
+      });
     }
 
     function applyFrameViewState(doc) {
@@ -441,6 +1166,7 @@
       document.getElementById("zoomReset").textContent = `${Math.round(previewZoom * 100)}%`;
       document.getElementById("zoomOut").disabled = previewZoom <= .5;
       document.getElementById("zoomIn").disabled = previewZoom >= 2;
+      scheduleAllCoordinateRulers();
     }
 
     function changeZoom(delta) {
@@ -467,10 +1193,102 @@
       Object.entries(sourceElements).forEach(([side, elements]) => {
         elements.forEach((element, fieldId) => {
           const row = semanticRows.find(item => item.id === fieldId);
-          const resolution = row?.conflict_key ? resolutions[row.conflict_key] : null;
-          element.classList.toggle("mxl-selected-source", resolution?.choice === side);
+          const resolution = resolutionForRow(row);
+          const selected = resolution?.choice === side;
+          element.classList.toggle("mxl-selected-source", selected);
+          setElementChip(element, selected ? resolution.choice : null);
         });
       });
+    }
+
+    function updateWholeDocumentControls() {
+      const selected = wholeDocumentChoice();
+      document.querySelectorAll("[data-whole-document]").forEach(button => {
+        button.classList.toggle("selected", button.dataset.wholeDocument === selected);
+        button.setAttribute(
+          "aria-pressed",
+          String(button.dataset.wholeDocument === selected)
+        );
+      });
+    }
+
+    function updateDecisionControls() {
+      const documentChoice = wholeDocumentChoice();
+      model.conflicts.forEach(conflict => {
+        const choice = documentChoice || resolutions[conflict.key]?.choice;
+        document.querySelectorAll(
+          `[data-key="${CSS.escape(conflict.key)}"] .choice`
+        ).forEach(node => {
+          node.classList.toggle("selected", node.dataset.choice === choice);
+        });
+        document.querySelectorAll(
+          `textarea[data-manual-key="${CSS.escape(conflict.key)}"]`
+        ).forEach(textarea => {
+          textarea.closest(".manual, .picker-manual")
+            ?.classList.toggle("selected", choice === "manual");
+          const manualValue = resolutions[conflict.key]?.choice === "manual"
+            ? escapeText(resolutions[conflict.key].value)
+            : "";
+          if (textarea !== document.activeElement && textarea.value !== manualValue) {
+            textarea.value = manualValue;
+          }
+        });
+      });
+      updateWholeDocumentControls();
+    }
+
+    function finishBulkChoice(previousState, label) {
+      commitDecisionHistory(previousState, label);
+      updateDecisionControls();
+      updateProgress();
+      updateSourceSelections();
+      if (activeConflictKey) showFieldPicker(activeConflictKey, false, activeFieldId);
+      showDraftResult();
+      exactPreviewGeneration += 1;
+    }
+
+    function chooseWholeDocument(side) {
+      if (sessionEnded || !["base", "local", "remote"].includes(side)) return;
+      const previousState = captureDecisionState();
+      resolutions.document = {choice: side};
+      draftRowStructurePreference = side;
+      pendingResultFocusKey = null;
+      finishBulkChoice(
+        previousState,
+        `use the complete ${side[0].toUpperCase()}${side.slice(1)} document`
+      );
+    }
+
+    function fillUnresolved(side) {
+      if (sessionEnded || !["base", "local", "remote"].includes(side)) return;
+      const previousState = captureDecisionState();
+      delete resolutions.document;
+      model.conflicts.forEach(conflict => {
+        if (!resolutions[conflict.key]) resolutions[conflict.key] = {choice: side};
+      });
+      if (model.conflicts.some(conflict => conflict.kind === "row")) {
+        draftRowStructurePreference = side;
+      }
+      finishBulkChoice(
+        previousState,
+        `resolve pending conflicts with ${side[0].toUpperCase()}${side.slice(1)}`
+      );
+    }
+
+    function chooseAll(side) {
+      if (sessionEnded || !["base", "local", "remote"].includes(side)) return;
+      const previousState = captureDecisionState();
+      delete resolutions.document;
+      model.conflicts.forEach(conflict => {
+        resolutions[conflict.key] = {choice: side};
+      });
+      if (model.conflicts.some(conflict => conflict.kind === "row")) {
+        draftRowStructurePreference = side;
+      }
+      finishBulkChoice(
+        previousState,
+        `set every conflict to ${side[0].toUpperCase()}${side.slice(1)}`
+      );
     }
 
     function updateConflictNavigation() {
@@ -487,33 +1305,89 @@
       const scroller = doc?.scrollingElement || root;
       if (!root || !scroller) return;
       const rect = element.getBoundingClientRect();
-      const left = scroller.scrollLeft + rect.left - Math.max(0, (root.clientWidth - rect.width) / 2);
-      const top = scroller.scrollTop + rect.top - Math.max(0, (root.clientHeight - rect.height) / 2);
+      const viewportWidth = doc.defaultView?.innerWidth || root.clientWidth;
+      const viewportHeight = doc.defaultView?.innerHeight || root.clientHeight;
+      const left = scroller.scrollLeft + rect.left - Math.max(0, (viewportWidth - rect.width) / 2);
+      const top = scroller.scrollTop + rect.top - Math.max(0, (viewportHeight - rect.height) / 2);
       scroller.scrollLeft = Math.max(0, left);
       scroller.scrollTop = Math.max(0, top);
+      const frame = doc.defaultView?.frameElement;
+      if (frame) scheduleFrameCoordinateRulers(frame);
+    }
+
+    function focusPendingResultConflict() {
+      const conflict = conflictByKey[pendingResultFocusKey];
+      if (!conflict) return;
+      const fieldIds = conflict.field_ids || (conflict.field_id ? [conflict.field_id] : []);
+      const fieldTarget = fieldIds
+        .map(fieldId => conflictVisualElement(resultElements.get(fieldId)))
+        .find(Boolean);
+      const resultDocument = document.getElementById("resultFrame").contentDocument;
+      const placeholder = resultDocument?.querySelector(
+        `[data-mxl-conflict-key="${CSS.escape(conflict.key)}"]`
+      );
+      const target = placeholder || fieldTarget;
+      if (!target) return;
+      scrollFrameElementIntoView(target);
+      pendingResultFocusKey = null;
     }
 
     function highlightActiveConflict(conflict, focusSources = false) {
-      Object.values(sourceElements).forEach(elements => {
-        elements.forEach(element => element.classList.remove("mxl-active-conflict"));
-      });
-      resultElements.forEach(element => element.classList.remove("mxl-active-conflict"));
-      if (!conflict?.field_id) {
+      const previewDocuments = [
+        ...Object.values(sourceFrames).map(frame => frame.contentDocument),
+        document.getElementById("resultFrame").contentDocument,
+      ].filter(Boolean);
+      previewDocuments.forEach(doc =>
+        doc.querySelectorAll(".mxl-active-conflict")
+          .forEach(element => element.classList.remove("mxl-active-conflict"))
+      );
+      const placeholderTargets = conflict
+        ? previewDocuments.flatMap(doc => Array.from(
+            doc.querySelectorAll(`[data-mxl-conflict-key="${CSS.escape(conflict.key)}"]`)
+          ))
+        : [];
+      const fieldIds = conflict?.field_ids || (conflict?.field_id ? [conflict.field_id] : []);
+      if (!fieldIds.length && !placeholderTargets.length) {
         if (focusSources && conflict) {
           document.querySelector(`[data-key="${CSS.escape(conflict.key)}"]`)?.scrollIntoView({behavior: "smooth", block: "center"});
         }
         return;
       }
       const sourceTargets = [];
-      Object.values(sourceElements).forEach(elements => {
-        const element = elements.get(conflict.field_id);
-        if (element) sourceTargets.push(element);
+      const sourceFocusTargets = [];
+      Object.entries(sourceElements).forEach(([side, elements]) => {
+        const sideTargets = [];
+        fieldIds.forEach(fieldId => {
+          const element = conflictVisualElement(elements.get(fieldId));
+          if (element && !sideTargets.includes(element)) {
+            if (!sourceTargets.includes(element)) sourceTargets.push(element);
+            sideTargets.push(element);
+          }
+        });
+        const sourceDocument = sourceFrames[side]?.contentDocument;
+        const placeholder = sourceDocument?.querySelector(
+          `[data-mxl-conflict-key="${CSS.escape(conflict.key)}"]`
+        );
+        const focusTarget = sideTargets[0] || placeholder;
+        if (focusTarget) sourceFocusTargets.push(focusTarget);
       });
-      const resultElement = resultElements.get(conflict.field_id);
-      [...sourceTargets, resultElement].filter(Boolean).forEach(element => element.classList.add("mxl-active-conflict"));
+      const resultTargets = fieldIds
+        .map(fieldId => conflictVisualElement(resultElements.get(fieldId)))
+        .filter((element, index, items) => element && items.indexOf(element) === index);
+      const resultDocument = document.getElementById("resultFrame").contentDocument;
+      const resultPlaceholder = resultDocument?.querySelector(
+        `[data-mxl-conflict-key="${CSS.escape(conflict.key)}"]`
+      );
+      [...sourceTargets, ...resultTargets, ...placeholderTargets]
+        .forEach(element => element.classList.add("mxl-active-conflict"));
+      scheduleAllCoordinateRulers();
       if (focusSources) {
-        sourceTargets.forEach(scrollFrameElementIntoView);
-        scrollFrameElementIntoView(resultElement);
+        sourceScrollSyncSuspended = true;
+        sourceFocusTargets.forEach(scrollFrameElementIntoView);
+        scrollFrameElementIntoView(resultPlaceholder || resultTargets[0]);
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          sourceScrollSyncSuspended = false;
+        }));
       }
     }
 
@@ -522,10 +1396,12 @@
       activeConflictIndex = activeConflictIndex < 0
         ? (delta > 0 ? 0 : conflictKeys.length - 1)
         : (activeConflictIndex + delta + conflictKeys.length) % conflictKeys.length;
-      showFieldPicker(conflictKeys[activeConflictIndex], true);
+      showFieldPicker(conflictKeys[activeConflictIndex], true, null);
     }
 
-    function showFieldPicker(conflictKey, focusSources = false) {
+    function showFieldPicker(conflictKey, focusSources = false, fieldId = undefined) {
+      if (fieldId !== undefined) activeFieldId = fieldId;
+      else if (conflictKey !== activeConflictKey || !conflictKey) activeFieldId = null;
       activeConflictKey = conflictKey;
       const picker = document.getElementById("sourcePicker");
       const conflict = conflictByKey[conflictKey];
@@ -548,28 +1424,55 @@
       title.className = "source-picker-title";
       title.textContent = conflict.kind === "structural"
         ? "Structural conflict · choose the complete source document"
-        : `Conflict field · token ${conflict.token_index}`;
+        : conflict.kind === "row"
+          ? conflict.requires_choice === false
+            ? `Automatic row ${conflict.operation} · override the preselected source if needed`
+            : `Row ${conflict.operation} conflict · choose whether and where this row belongs`
+          : conflict.requires_choice === false
+            ? `Automatic cell change · override the preselected source if needed`
+            : `Conflict field · token ${conflict.token_index}`;
+      const location = document.createElement("div");
+      location.className = "source-picker-location";
+      const selectedSide = resolutions[conflict.key]?.choice;
+      const selectedCoordinate = conflict.kind === "row" && !activeFieldId
+        ? rowPositionCoordinate(
+            conflict,
+            selectedSide && selectedSide !== "manual" ? selectedSide : "base"
+          )
+        : selectedConflictCoordinate(conflict, activeFieldId);
+      location.textContent = activeFieldId
+        ? `Selected cell · ${selectedCoordinate || "coordinate unavailable"}`
+        : conflict.kind === "row"
+          ? `Affected row · ${selectedCoordinate || "coordinate unavailable"}`
+        : conflict.kind === "structural"
+          ? "Complete document"
+          : `Selected cell · ${selectedCoordinate || "coordinate unavailable"}`;
       const choices = document.createElement("div");
       choices.className = "source-picker-choices";
       ["base", "local", "remote"].forEach(side => {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "source-picker-choice";
-        button.classList.toggle("selected", resolutions[conflictKey]?.choice === side);
+        button.classList.toggle("selected", selectedSide === side);
         const sideNode = document.createElement("span");
         sideNode.className = "source-picker-side";
-        sideNode.textContent = side;
+        const sideLabel = document.createElement("span");
+        sideLabel.textContent = side;
+        const coordinateNode = document.createElement("span");
+        coordinateNode.className = "source-picker-coordinate";
+        coordinateNode.textContent = conflictCoordinate(conflict, side) || "—";
+        sideNode.append(sideLabel, coordinateNode);
         const valueNode = document.createElement("span");
         valueNode.className = "source-picker-value";
         valueNode.textContent = conflict.kind === "structural"
           ? `${conflict[`${side}_token_count`]} tokens`
           : escapeText(conflict[side]);
         button.append(sideNode, valueNode);
-        button.addEventListener("click", () => choose(conflictKey, side));
+        button.addEventListener("click", () => choose(conflictKey, side, "", true));
         choices.append(button);
       });
-      picker.append(title, choices);
-      if (conflict.manual_allowed && conflict.kind !== "structural") {
+      picker.append(title, location, choices);
+      if (conflict.manual_allowed && conflict.kind === "value") {
         const manual = document.createElement("div");
         manual.className = "picker-manual";
         manual.classList.toggle("selected", resolutions[conflictKey]?.choice === "manual");
@@ -581,8 +1484,7 @@
         textarea.value = resolutions[conflictKey]?.choice === "manual"
           ? escapeText(resolutions[conflictKey].value)
           : "";
-        textarea.addEventListener("focus", () => choose(conflictKey, "manual", textarea.value));
-        textarea.addEventListener("input", () => choose(conflictKey, "manual", textarea.value));
+        bindManualHistory(textarea, conflictKey);
         manual.append(label, textarea);
         picker.append(manual);
       }
@@ -595,7 +1497,10 @@
       const elements = frameContentElements(doc);
       elements.forEach(element => element.classList.add("mxl-content"));
       const used = new Set();
-      semanticRows.filter(row => row.state !== "unchanged").forEach(row => {
+      semanticRows.filter(row =>
+        (row.state !== "unchanged" || row.row_conflict_key) &&
+        (!row.row_conflict_key || conflictByKey[row.row_conflict_key]?.states?.[side] !== "absent")
+      ).forEach(row => {
         const element = findFieldElement(
           elements,
           row[side],
@@ -603,19 +1508,21 @@
           rowOccurrence(row, side)
         );
         if (!element) return;
-        markElement(element, row);
+        markElement(element, row, side);
         sourceElements[side].set(row.id, element);
         element.addEventListener("click", event => {
           event.preventDefault();
           event.stopPropagation();
           if (row.conflict_key) {
-            showFieldPicker(row.conflict_key);
-            choose(row.conflict_key, side);
+            showFieldPicker(row.conflict_key, false, row.id);
+            choose(row.conflict_key, side, "", true);
           } else {
             showFieldPicker("");
           }
         });
       });
+      renderRowConflictPlaceholders(doc, side, side, elements);
+      installFrameCoordinateRulers(frame, side, elements);
       applyFrameViewState(doc);
       updateSourceSelections();
       highlightActiveConflict(conflictByKey[activeConflictKey]);
@@ -630,22 +1537,53 @@
     }
 
     function resolvedRowValue(row) {
+      const documentChoice = wholeDocumentChoice();
+      if (documentChoice) {
+        return {unresolved: false, value: row[documentChoice]};
+      }
       if (!row.conflict_key) return {unresolved: false, value: automaticRowValue(row)};
       const resolution = resolutions[row.conflict_key];
-      if (!resolution) return {unresolved: true, value: ""};
+      if (!resolution) {
+        const provisionalSource = draftRowStructureSource();
+        return {
+          unresolved: true,
+          value: row.row_conflict_key ? row[provisionalSource] : ""
+        };
+      }
+      if (row.row_conflict_key) {
+        const conflict = conflictByKey[row.row_conflict_key];
+        if (conflict?.states?.[resolution.choice] === "absent") {
+          return {unresolved: false, value: null};
+        }
+      }
       if (resolution.choice === "manual") return {unresolved: false, value: resolution.value || ""};
       return {unresolved: false, value: row[resolution.choice]};
+    }
+
+    function draftResolvedRowValue(row) {
+      const rowSource = selectedRowStructureSource();
+      if (row.row_conflict_key && (rowSource === undefined || rowSource === "")) {
+        const provisionalSource = draftRowStructureSource();
+        return {
+          unresolved: !resolutions[row.conflict_key],
+          value: row[provisionalSource]
+        };
+      }
+      return resolvedRowValue(row);
     }
 
     function updateDraftResultFields() {
       resultElements.forEach((element, fieldId) => {
         const row = semanticRows.find(item => item.id === fieldId);
         if (!row) return;
-        const resolved = resolvedRowValue(row);
-        element.classList.toggle("mxl-unresolved", resolved.unresolved);
-        element.dataset.mxlPlaceholder = resolved.unresolved ? "Click to choose source" : "";
+        const resolved = draftResolvedRowValue(row);
+        const unresolvedField = resolved.unresolved && !row.row_conflict_key;
+        const resolution = resolutionForRow(row);
+        element.classList.toggle("mxl-unresolved", unresolvedField);
+        element.dataset.mxlPlaceholder = unresolvedField ? "Click to choose source" : "";
         element.textContent = resolved.value === null || resolved.value === undefined ? "" : String(resolved.value);
-        element.classList.toggle("mxl-selected-source", Boolean(row.conflict_key && resolutions[row.conflict_key]));
+        element.classList.toggle("mxl-selected-source", Boolean(resolution));
+        setElementChip(element, resolution?.choice || null);
       });
     }
 
@@ -658,25 +1596,37 @@
       elements.forEach(element => element.classList.add("mxl-content"));
       resultElements.clear();
       const used = new Set();
-      semanticRows.filter(row => row.state !== "unchanged" && row.base !== null && row.base !== undefined).forEach(row => {
+      const source = draftRowStructureSource();
+      semanticRows.filter(row =>
+        (row.state !== "unchanged" || row.row_conflict_key) &&
+        (!row.row_conflict_key || conflictByKey[row.row_conflict_key]?.states?.[source] !== "absent") &&
+        row[source] !== null && row[source] !== undefined
+      ).forEach(row => {
         const element = findFieldElement(
           elements,
-          row.base,
+          row[source],
           used,
-          rowOccurrence(row, "base")
+          rowOccurrence(row, source)
         );
         if (!element) return;
-        markElement(element, row);
+        markElement(element, row, source);
         resultElements.set(row.id, element);
         element.addEventListener("click", event => {
           event.preventDefault();
           event.stopPropagation();
-          showFieldPicker(row.conflict_key || "", Boolean(row.conflict_key));
+          showFieldPicker(
+            row.conflict_key || "",
+            Boolean(row.conflict_key),
+            row.conflict_key ? row.id : null
+          );
         });
       });
+      renderRowConflictPlaceholders(doc, "result", source, elements);
+      installFrameCoordinateRulers(frame, source, elements);
       applyFrameViewState(doc);
       updateDraftResultFields();
       highlightActiveConflict(conflictByKey[activeConflictKey]);
+      focusPendingResultConflict();
     }
 
     function decorateExactResult() {
@@ -687,7 +1637,8 @@
       const elements = frameContentElements(doc);
       elements.forEach(element => element.classList.add("mxl-content"));
       const used = new Set();
-      semanticRows.filter(row => row.state !== "unchanged").forEach(row => {
+      const source = selectedRowStructureSource() || resolutions.structural?.choice || "base";
+      semanticRows.filter(row => row.state !== "unchanged" || row.row_conflict_key).forEach(row => {
         const resolved = resolvedRowValue(row);
         if (resolved.unresolved) return;
         const element = findFieldElement(
@@ -697,41 +1648,81 @@
           rowOccurrence(row, "result", item => resolvedRowValue(item).value)
         );
         if (!element) return;
-        markElement(element, row);
+        markElement(element, row, source);
+        setElementChip(element, resolutionForRow(row)?.choice || null);
         element.addEventListener("click", event => {
           event.preventDefault();
           event.stopPropagation();
-          showFieldPicker(row.conflict_key || "", Boolean(row.conflict_key));
+          showFieldPicker(
+            row.conflict_key || "",
+            Boolean(row.conflict_key),
+            row.conflict_key ? row.id : null
+          );
         });
       });
+      renderRowConflictPlaceholders(
+        doc,
+        "result",
+        source,
+        elements
+      );
+      installFrameCoordinateRulers(
+        frame,
+        source,
+        elements,
+        row => resolvedRowValue(row).value
+      );
       applyFrameViewState(doc);
       highlightActiveConflict(conflictByKey[activeConflictKey]);
     }
 
     function showDraftResult() {
       const frame = document.getElementById("resultFrame");
+      const documentChoice = wholeDocumentChoice();
       const structural = conflictByKey.structural;
       const structuralChoice = resolutions.structural?.choice;
+      const rowSource = selectedRowStructureSource();
+      const draftSource = draftRowStructureSource();
       const overlay = document.getElementById("resultOverlay");
+      const status = document.getElementById("resultStatus");
       if (!exactPreviewAvailable) {
         overlay.textContent = "The 1C HTML renderer is unavailable. Resolve conflicts using the semantic view below.";
         overlay.classList.add("visible");
         return;
       }
-      if (structural && !structuralChoice) {
-        overlay.textContent = "The document structure changed on both sides. Choose Base, Local, or Remote as the complete result.";
-        overlay.classList.add("visible");
+      overlay.classList.remove("visible");
+      if (documentChoice) {
+        status.textContent =
+          `Using the complete ${documentChoice[0].toUpperCase()}${documentChoice.slice(1)} document`;
+      } else if (structural && !structuralChoice) {
+        status.textContent = "Showing the Base layout until the document structure is chosen";
+      } else if (rowSource === undefined) {
+        status.textContent =
+          `Showing the ${draftSource[0].toUpperCase()}${draftSource.slice(1)} layout; ` +
+          "unresolved row conflicts are placeholders";
+      } else if (rowSource === "") {
+        status.textContent =
+          `Showing the ${draftSource[0].toUpperCase()}${draftSource.slice(1)} layout; ` +
+          "the selected row combination is incompatible and cannot be saved";
       } else {
-        overlay.classList.remove("visible");
+        status.textContent = "";
       }
-      const source = structuralChoice || "base";
+      const source = documentChoice || structuralChoice || draftSource;
       const desired = `/preview/${token}/${source}`;
-      document.getElementById("resultStatus").textContent = "";
       if (frame.dataset.source !== `draft-${source}`) {
         frame.dataset.source = `draft-${source}`;
         frame.src = desired;
-      } else if (!structural) {
+      } else if (documentChoice || !structural) {
         updateDraftResultFields();
+        const doc = frame.contentDocument;
+        if (doc?.body) {
+          doc.querySelectorAll(".mxl-row-provisional-hidden").forEach(node =>
+            node.classList.remove("mxl-row-provisional-hidden")
+          );
+          renderRowConflictPlaceholders(doc, "result", source, frameContentElements(doc));
+          highlightActiveConflict(conflictByKey[activeConflictKey]);
+        }
+        focusPendingResultConflict();
       }
     }
 
@@ -779,9 +1770,24 @@
       refreshExactResult(exactPreviewGeneration);
     }
 
-    function choose(key, choice, value = "") {
+    function choose(
+      key,
+      choice,
+      value = "",
+      focusResult = false,
+      historyGroup = null
+    ) {
       if (sessionEnded) return;
+      const previousState = captureDecisionState();
+      delete resolutions.document;
       resolutions[key] = choice === "manual" ? {choice, value} : {choice};
+      if (
+        conflictByKey[key]?.kind === "row" &&
+        ["base", "local", "remote"].includes(choice)
+      ) {
+        draftRowStructurePreference = choice;
+      }
+      if (focusResult || conflictByKey[key]?.kind === "row") pendingResultFocusKey = key;
       if (choice === "manual") {
         document.querySelectorAll(`textarea[data-manual-key="${CSS.escape(key)}"]`).forEach(textarea => {
           if (textarea !== document.activeElement && textarea.value !== value) textarea.value = value;
@@ -796,11 +1802,30 @@
       if (activeConflictKey === key && choice === "manual") {
         document.querySelectorAll("#sourcePicker .source-picker-choice").forEach(node => node.classList.remove("selected"));
       }
+      const conflict = conflictByKey[key];
+      const label = choice === "manual"
+        ? `edit the manual value for ${conflict?.kind === "row" ? `row ${conflict.row_number}` : "a cell"}`
+        : `choose ${choice[0].toUpperCase()}${choice.slice(1)} for ${
+            conflict?.kind === "row" ? `row ${conflict.row_number}` : "a cell"
+          }`;
+      commitDecisionHistory(previousState, label, historyGroup);
+      updateDecisionControls();
       updateProgress();
       updateSourceSelections();
       if (activeConflictKey === key && choice !== "manual") showFieldPicker(key);
       showDraftResult();
       exactPreviewGeneration += 1;
+    }
+
+    function bindManualHistory(textarea, key) {
+      const historyGroup = `manual:${key}`;
+      textarea.addEventListener("focus", () =>
+        choose(key, "manual", textarea.value, false, historyGroup)
+      );
+      textarea.addEventListener("input", () =>
+        choose(key, "manual", textarea.value, false, historyGroup)
+      );
+      textarea.addEventListener("blur", () => closeHistoryGroup(historyGroup));
     }
 
     function choiceNode(conflict, side) {
@@ -820,23 +1845,35 @@
     }
 
     function renderConflicts() {
-      if (!model.conflicts.length) {
+      const listedConflicts = model.conflicts.filter(
+        conflict => conflict.kind !== "value" || requiresManualChoice(conflict)
+      );
+      if (!listedConflicts.length) {
         const empty = document.createElement("div");
         empty.className = "card empty";
-        empty.textContent = "No manual decisions are required. The merge can be saved safely.";
+        empty.textContent = "No manual decisions are required. Automatic cell choices can still be overridden directly in the previews.";
         conflictsNode.append(empty);
         return;
       }
 
-      model.conflicts.forEach((conflict, index) => {
+      listedConflicts.forEach(conflict => {
         const card = document.createElement("article");
         card.className = "card conflict-card";
+        if (conflict.kind === "row" && conflict.requires_choice === false) {
+          card.classList.add("automatic-row-change");
+        }
         card.dataset.key = conflict.key;
         const head = document.createElement("div");
         head.className = "conflict-head";
         const number = document.createElement("div");
         number.className = "conflict-number";
-        number.textContent = conflict.kind === "structural" ? "Structural conflict" : `Conflict ${index + 1} · token ${conflict.token_index}`;
+        number.textContent = conflict.kind === "structural"
+          ? "Structural conflict"
+          : conflict.kind === "row"
+            ? conflict.requires_choice === false
+              ? `Automatic row change · ${conflict.operation}`
+              : `Row conflict · ${conflict.operation}`
+            : `Conflict ${conflictKeys.indexOf(conflict.key) + 1} · token ${conflict.token_index}`;
         head.append(number);
 
         const choices = document.createElement("div");
@@ -850,6 +1887,25 @@
           ["base", "local", "remote"].forEach(side => choices.append(choiceNode(conflict, side)));
         }
         card.append(head);
+        if (conflict.kind === "structural" && conflict.reason) {
+          const explanation = document.createElement("div");
+          explanation.className = "conflict-context";
+          explanation.textContent = conflict.reason;
+          card.append(explanation);
+        }
+        if (conflict.kind === "row") {
+          const explanation = document.createElement("div");
+          explanation.className = "conflict-context";
+          const operationText = conflict.operation === "add"
+            ? "Choose a side with the row to add it, or a side without it to omit it."
+            : conflict.operation === "delete"
+              ? "Choose a side without the row to delete it, or a side with it to keep it."
+              : "Choose the row position from Base, Local, or Remote.";
+          explanation.textContent = conflict.requires_choice === false
+            ? `Applied from ${String(conflict.default_choice).toUpperCase()} automatically. ${operationText}`
+            : operationText;
+          card.append(explanation);
+        }
         if ((conflict.context || []).length) {
           const context = document.createElement("details");
           context.className = "conflict-context";
@@ -862,15 +1918,14 @@
         }
         card.append(choices);
 
-        if (conflict.manual_allowed && conflict.kind !== "structural") {
+        if (conflict.manual_allowed && conflict.kind === "value") {
           card.classList.add("has-manual");
           const manual = document.createElement("div");
           manual.className = "manual";
           const textarea = document.createElement("textarea");
           textarea.dataset.manualKey = conflict.key;
           textarea.placeholder = "Manual merged value";
-          textarea.addEventListener("focus", () => choose(conflict.key, "manual", textarea.value));
-          textarea.addEventListener("input", () => choose(conflict.key, "manual", textarea.value));
+          bindManualHistory(textarea, conflict.key);
           manual.append(textarea);
           card.append(manual);
         }
@@ -887,9 +1942,40 @@
       document.title = `${fileName} — MXL merge`;
     }
 
-    function renderRenderedPreviews() {
-      const preview = model.previews.rendered;
+    function schedulePreviewStatusPoll() {
+      if (previewPollScheduled || sessionEnded) return;
+      previewPollScheduled = true;
+      setTimeout(async () => {
+        previewPollScheduled = false;
+        if (sessionEnded) return;
+        try {
+          const response = await fetch(`${apiBase}/preview-status`, {cache: "no-store"});
+          const preview = await response.json();
+          if (!response.ok) throw new Error(preview.error || "Unable to read preview status");
+          model.previews.rendered = preview;
+          renderRenderedPreviews(preview);
+          exactPreviewAvailable = Boolean(preview.provider && preview.available.length === 3);
+          showDraftResult();
+          updateProgress();
+        } catch (error) {
+          showToast(`Preview status: ${error.message}`, true);
+        }
+      }, 500);
+    }
+
+    function renderRenderedPreviews(preview = model.previews.rendered) {
       const node = document.getElementById("renderedPreviews");
+      node.replaceChildren();
+      Object.keys(sourceFrames).forEach(side => delete sourceFrames[side]);
+      Object.values(sourceElements).forEach(elements => elements.clear());
+      if (preview.loading) {
+        const loading = document.createElement("div");
+        loading.className = "preview-unavailable";
+        loading.textContent = "Rendering exact Base, Local, and Remote previews in the background…";
+        node.append(loading);
+        schedulePreviewStatusPoll();
+        return;
+      }
       if (!preview.provider || preview.available.length !== 3) {
         const unavailable = document.createElement("div");
         unavailable.className = "preview-unavailable";
@@ -917,34 +2003,41 @@
         const labelText = document.createElement("span");
         labelText.textContent = side;
         label.append(labelText);
-        if (conflictByKey.structural) {
-          const useButton = document.createElement("button");
-          useButton.type = "button";
-          useButton.className = "use-document";
-          useButton.textContent = `Use ${side}`;
-          useButton.addEventListener("click", () => {
-            showFieldPicker("structural");
-            choose("structural", side);
-          });
-          label.append(useButton);
-        }
+        const actions = document.createElement("div");
+        actions.className = "document-actions";
+        const pendingButton = document.createElement("button");
+        pendingButton.type = "button";
+        pendingButton.className = "resolve-pending";
+        pendingButton.textContent = "Resolve pending";
+        pendingButton.title = `Use ${side} only for conflicts that still have no decision`;
+        pendingButton.addEventListener("click", () => fillUnresolved(side));
+        const useButton = document.createElement("button");
+        useButton.type = "button";
+        useButton.className = "use-document";
+        useButton.dataset.wholeDocument = side;
+        useButton.textContent = `Use ${side}`;
+        useButton.title = `Use the complete ${side} document as the result`;
+        useButton.addEventListener("click", () => chooseWholeDocument(side));
+        actions.append(pendingButton, useButton);
+        label.append(actions);
         const frame = document.createElement("iframe");
         frame.title = `${side} rendered MXL`;
         frame.sandbox = "allow-same-origin";
-        frame.src = `/preview/${token}/${side}`;
+        frame.dataset.previewSrc = `/preview/${token}/${side}`;
         frames.push(frame);
         sourceFrames[side] = frame;
-        pane.append(label, frame);
+        pane.append(label, createFrameCoordinateShell(frame));
         grid.append(pane);
       });
       node.append(grid);
+      updateWholeDocumentControls();
 
       let syncing = false;
       frames.forEach(frame => frame.addEventListener("load", () => {
         const side = Object.entries(sourceFrames).find(([, candidate]) => candidate === frame)?.[0];
         if (side) decorateSourceFrame(side, frame);
         frame.contentWindow.addEventListener("scroll", () => {
-          if (syncing) return;
+          if (syncing || sourceScrollSyncSuspended) return;
           syncing = true;
           frames.filter(target => target !== frame).forEach(target => {
             target.contentWindow.scrollTo(frame.contentWindow.scrollX, frame.contentWindow.scrollY);
@@ -952,6 +2045,9 @@
           requestAnimationFrame(() => syncing = false);
         });
       }));
+      frames.forEach(frame => {
+        frame.src = frame.dataset.previewSrc;
+      });
     }
 
     function renderSemanticPreview() {
@@ -960,17 +2056,54 @@
       const changed = preview.total - (preview.stats.unchanged || 0);
       document.getElementById("semanticMeta").textContent =
         `${preview.total} aligned rows · ${changed} changed${preview.truncated ? " · preview truncated" : ""}. ` +
-        "Insertions, deletions and reorderings are visualized here but are not merged automatically.";
+        "Recognized row insertions, deletions and moves can be resolved individually below.";
       preview.rows.forEach(row => {
         const tr = document.createElement("tr");
-        tr.className = `state-${row.state}`;
+        const rowDecision = row.row_conflict_key
+          ? conflictByKey[row.row_conflict_key]
+          : null;
+        const decision = row.conflict_key
+          ? conflictByKey[row.conflict_key]
+          : null;
+        const automaticRowChange = rowDecision?.requires_choice === false;
+        tr.className = `state-${automaticRowChange ? rowChangeVisualState(rowDecision) : row.state}`;
+        if (row.row_conflict_key) {
+          tr.classList.add(
+            automaticRowChange ? "structural-row-change" : "structural-row-conflict"
+          );
+          tr.title = automaticRowChange
+            ? "Automatic one-sided row change — click to override"
+            : "Structural row conflict — click to choose Base, Local, or Remote";
+          tr.addEventListener("click", () =>
+            showFieldPicker(row.row_conflict_key, true, row.id)
+          );
+        }
         ["base", "local", "remote"].forEach(side => {
           const td = document.createElement("td");
+          const coordinate = coordinateForRow(row, side);
+          if (coordinate) {
+            const coordinateNode = document.createElement("span");
+            coordinateNode.className = "semantic-coordinate";
+            coordinateNode.textContent = coordinate;
+            td.append(coordinateNode);
+          }
           if (row[side] === null || row[side] === undefined) {
-            td.textContent = "∅";
+            td.append(document.createTextNode("∅"));
             td.className = "semantic-empty";
           } else {
-            td.textContent = row[side];
+            td.append(document.createTextNode(row[side]));
+          }
+          if (row.conflict_key) {
+            td.classList.add("semantic-decision");
+            td.title = decision?.requires_choice === false
+              ? "Automatic choice — click to override"
+              : "Click to choose this source";
+            td.addEventListener("click", event => {
+              event.preventDefault();
+              event.stopPropagation();
+              showFieldPicker(row.conflict_key, false, row.id);
+              choose(row.conflict_key, side, "", true);
+            });
           }
           tr.append(td);
         });
@@ -979,7 +2112,22 @@
     }
 
     document.querySelectorAll("[data-all]").forEach(button => {
-      button.addEventListener("click", () => model.conflicts.forEach(conflict => choose(conflict.key, button.dataset.all)));
+      button.addEventListener("click", () => chooseAll(button.dataset.all));
+    });
+
+    undoButton.addEventListener("click", undoDecision);
+    redoButton.addEventListener("click", redoDecision);
+    document.addEventListener("keydown", event => {
+      if (sessionEnded || (!event.ctrlKey && !event.metaKey) || event.altKey) return;
+      const key = event.key.toLowerCase();
+      if (key === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redoDecision();
+        else undoDecision();
+      } else if (key === "y" && !event.shiftKey) {
+        event.preventDefault();
+        redoDecision();
+      }
     });
 
     document.querySelectorAll("[data-view-mode]").forEach(button => {
@@ -1009,12 +2157,17 @@
       const frame = document.getElementById("resultFrame");
       if (frame.dataset.source === "exact") {
         decorateExactResult();
-      } else if (!conflictByKey.structural) {
+      } else if (wholeDocumentChoice() || !conflictByKey.structural) {
         decorateDraftResult();
       } else {
         try {
           installFrameStyles(frame.contentDocument);
           applyFrameViewState(frame.contentDocument);
+          installFrameCoordinateRulers(
+            frame,
+            wholeDocumentChoice() || resolutions.structural?.choice || "base",
+            frameContentElements(frame.contentDocument)
+          );
         } catch (_) {}
       }
     });
@@ -1034,6 +2187,7 @@
         if (!response.ok) throw new Error(payload.error || "Unable to save merge result");
         sessionEnded = true;
         document.body.classList.add("session-ended");
+        updateHistoryControls();
         saveButton.textContent = "Saved";
         cancelButton.hidden = true;
         document.getElementById("sourcePicker").innerHTML = '<div class="source-picker-empty">Merge saved. This session is complete.</div>';
@@ -1054,6 +2208,7 @@
       activeConflictKey = null;
       activeConflictIndex = -1;
       updateConflictNavigation();
+      updateDecisionControls();
       updateSourceSelections();
       showDraftResult();
       updateProgress();
@@ -1070,6 +2225,7 @@
         if (!response.ok) throw new Error("Unable to cancel merge");
         sessionEnded = true;
         document.body.classList.add("session-ended");
+        updateHistoryControls();
         saveButton.disabled = true;
         cancelButton.textContent = "Cancelled";
         document.getElementById("sourcePicker").innerHTML = '<div class="source-picker-empty">Merge cancelled. No file was written.</div>';
@@ -1087,6 +2243,8 @@
     renderRenderedPreviews();
     showDraftResult();
     renderSemanticPreview();
+    updateDecisionControls();
+    updateHistoryControls();
     updateProgress();
     updateConflictNavigation();
     updateZoom();

@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
@@ -19,8 +20,12 @@ INFOBASE_MARKER = "1Cv8.1CD"
 MANAGED_INFOBASE_USER = "KOTStartupService"
 MANAGED_INFOBASE_PASSWORD = ""
 MANAGED_STATE_FILE = ".mxl-merge-renderer.json"
+BATCH_CAPABILITY_MARKER = "mxl-merge-batch-v1"
 LEGACY_SINGLE_RENDER_EPF_SHA256 = (
     "aa894caf035962974c1834fa8ae9e123a0f3f89182ce53dfc9ad8d1eae0a1e56"
+)
+KNOWN_BATCH_RENDER_EPF_SHA256 = frozenset(
+    {"70ae14205f391cde144aabd291c5d993ecc2adc44de7112cf91900df8e4e15ad"}
 )
 
 
@@ -37,6 +42,7 @@ class OneCRenderSettings:
     password: str | None = None
     timeout_seconds: int = DEFAULT_RENDER_TIMEOUT_SECONDS
     managed_infobase: bool = False
+    batch_capable: bool = False
 
 
 def _git_config(key: str) -> str | None:
@@ -121,6 +127,26 @@ def _template_descriptor(template: Path) -> str:
     return digest.hexdigest()
 
 
+def _atomic_write_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _read_managed_state(infobase: Path) -> dict[str, object] | None:
     try:
         state = json.loads(_managed_state_path(infobase).read_text(encoding="utf-8"))
@@ -144,38 +170,47 @@ def _managed_authentication(settings: OneCRenderSettings) -> tuple[str | None, s
     return None, None
 
 
+@contextmanager
+def _renderer_lock(infobase: Path):
+    """Serialize creation and use of the shared per-version service infobase."""
+    lock_path = infobase.parent / ".mxl-merge-renderer.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as stream:
+        stream.seek(0, os.SEEK_END)
+        if stream.tell() == 0:
+            stream.write(b"0")
+            stream.flush()
+        stream.seek(0)
+        if os.name == "nt":
+            import msvcrt
+
+            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            stream.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
 def ensure_renderer_infobase(settings: OneCRenderSettings) -> Path:
-    """Create and prepare the service file infobase, then reuse it."""
-    infobase = settings.infobase
-    template = _managed_template_path()
-    if not template.is_file():
-        raise OneCRenderError(f"Bundled renderer infobase template was not found: {template}")
-    descriptor = _template_descriptor(template)
+    with _renderer_lock(settings.infobase):
+        return _ensure_renderer_infobase_locked(settings)
 
-    if _has_infobase_marker(infobase):
-        if not settings.managed_infobase or _valid_managed_state(infobase, descriptor):
-            return infobase
-        # Only the automatically selected per-user runtime is recreated here.
-        # An explicitly configured infobase is never deleted by the tool.
-        shutil.rmtree(infobase)
-        try:
-            _managed_state_path(infobase).unlink()
-        except FileNotFoundError:
-            pass
 
-    if infobase.exists() and not infobase.is_dir():
-        raise OneCRenderError(f"1C renderer infobase path is not a directory: {infobase}")
-    if infobase.is_dir():
-        try:
-            has_unrelated_files = any(infobase.iterdir())
-        except OSError as error:
-            raise OneCRenderError(f"Cannot inspect renderer infobase: {error}") from error
-        if has_unrelated_files:
-            raise OneCRenderError(
-                f"Renderer infobase directory is not empty and has no {INFOBASE_MARKER}: "
-                f"{infobase}"
-            )
-
+def _initialize_renderer_infobase(
+    settings: OneCRenderSettings, infobase: Path, template: Path
+) -> None:
     designer = resolve_designer_exe(settings.client_exe)
     infobase.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="mxl-onec-create-") as directory:
@@ -199,7 +234,6 @@ def ensure_renderer_infobase(settings: OneCRenderSettings) -> Path:
             raise OneCRenderError(
                 f"Timed out while creating the renderer infobase at {infobase}"
             ) from error
-
         if completed.returncode != 0:
             details = (
                 _read_text_if_present(log_path)
@@ -251,11 +285,66 @@ def ensure_renderer_infobase(settings: OneCRenderSettings) -> Path:
                 or "no details"
             )
             raise OneCRenderError(
-                f"1C could not restore the bundled renderer infobase template "
+                "1C could not restore the bundled renderer infobase template "
                 f"(exit code {completed.returncode}): {details}"
             )
 
-    _managed_state_path(infobase).write_text(
+
+def _ensure_renderer_infobase_locked(settings: OneCRenderSettings) -> Path:
+    """Create and prepare the service file infobase, then reuse it."""
+    infobase = settings.infobase
+    template = _managed_template_path()
+    if not template.is_file():
+        raise OneCRenderError(f"Bundled renderer infobase template was not found: {template}")
+    descriptor = _template_descriptor(template)
+
+    has_existing_marker = _has_infobase_marker(infobase)
+    if has_existing_marker:
+        if not settings.managed_infobase or _valid_managed_state(infobase, descriptor):
+            return infobase
+
+    if infobase.exists() and not infobase.is_dir():
+        raise OneCRenderError(f"1C renderer infobase path is not a directory: {infobase}")
+    if infobase.is_dir() and not has_existing_marker:
+        try:
+            has_unrelated_files = any(infobase.iterdir())
+        except OSError as error:
+            raise OneCRenderError(f"Cannot inspect renderer infobase: {error}") from error
+        if has_unrelated_files:
+            raise OneCRenderError(
+                f"Renderer infobase directory is not empty and has no {INFOBASE_MARKER}: "
+                f"{infobase}"
+            )
+
+    backup: Path | None = None
+    staging: Path | None = None
+    if settings.managed_infobase:
+        infobase.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{infobase.name}.building-", dir=infobase.parent)
+        )
+        try:
+            _initialize_renderer_infobase(settings, staging, template)
+            if infobase.exists():
+                backup = Path(
+                    tempfile.mkdtemp(prefix=f".{infobase.name}.backup-", dir=infobase.parent)
+                )
+                backup.rmdir()
+                os.replace(infobase, backup)
+            try:
+                os.replace(staging, infobase)
+            except BaseException:
+                if backup is not None and not infobase.exists():
+                    os.replace(backup, infobase)
+                raise
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+    else:
+        _initialize_renderer_infobase(settings, infobase, template)
+
+    _atomic_write_text(
+        _managed_state_path(infobase),
         json.dumps(
             {
                 "schemaVersion": 1,
@@ -265,8 +354,9 @@ def ensure_renderer_infobase(settings: OneCRenderSettings) -> Path:
             },
             indent=2,
         ),
-        encoding="utf-8",
     )
+    if backup is not None and backup.exists():
+        shutil.rmtree(backup)
     return infobase
 
 
@@ -279,12 +369,17 @@ def resolve_onec_settings(
     password: str | None = None,
     timeout_seconds: int = DEFAULT_RENDER_TIMEOUT_SECONDS,
 ) -> OneCRenderSettings:
+    if timeout_seconds <= 0:
+        raise OneCRenderError("1C render timeout must be greater than zero")
     bundled_epf = Path(__file__).resolve().parent / "onec" / "MxlToHtml.epf"
     client_value = _configured_value(client_exe, "MXL_ONEC_CLIENT", "mxl.onecClient")
     infobase_value = _configured_value(infobase, "MXL_ONEC_INFOBASE", "mxl.onecInfobase")
     epf_value = _configured_value(epf, "MXL_ONEC_EPF", "mxl.onecEpf")
     username_value = _configured_value(username, "MXL_ONEC_USERNAME", "mxl.onecUsername")
     password_value = password if password is not None else os.environ.get("MXL_ONEC_PASSWORD")
+    batch_value = _configured_value(
+        None, "MXL_ONEC_BATCH_CAPABLE", "mxl.onecBatchCapable"
+    )
 
     if not client_value:
         raise OneCRenderError(
@@ -303,6 +398,7 @@ def resolve_onec_settings(
         password_value,
         timeout_seconds,
         not bool(infobase_value),
+        str(batch_value or "").lower() in {"1", "true", "yes", "on"},
     )
     if not settings.client_exe.is_file():
         raise OneCRenderError(f"1C client was not found: {settings.client_exe}")
@@ -355,11 +451,22 @@ def _read_text_if_present(path: Path) -> str:
         return ""
 
 
-def epf_supports_batch(epf: Path) -> bool:
-    """Return false for the known single-document EPF bundled initially."""
+def epf_supports_batch(epf: Path, explicit: bool | None = None) -> bool:
+    """Recognize verified bundled builds or an explicit capability declaration."""
+    if explicit is not None:
+        return explicit
     try:
-        return _template_descriptor(epf) != LEGACY_SINGLE_RENDER_EPF_SHA256
+        descriptor = _template_descriptor(epf)
     except OSError:
+        return False
+    if descriptor in KNOWN_BATCH_RENDER_EPF_SHA256:
+        return True
+    if descriptor == LEGACY_SINGLE_RENDER_EPF_SHA256:
+        return False
+    marker = Path(f"{epf}.batch-capable")
+    try:
+        return marker.read_text(encoding="utf-8").strip() == BATCH_CAPABILITY_MARKER
+    except (OSError, UnicodeError):
         return False
 
 
@@ -368,65 +475,66 @@ def _run_onec_render_job(
     expected_targets: list[Path],
     settings: OneCRenderSettings,
 ) -> None:
-    ensure_renderer_infobase(settings)
-    for target in expected_targets:
-        target.parent.mkdir(parents=True, exist_ok=True)
+    with _renderer_lock(settings.infobase):
+        _ensure_renderer_infobase_locked(settings)
+        for target in expected_targets:
+            target.parent.mkdir(parents=True, exist_ok=True)
 
-    with tempfile.TemporaryDirectory(prefix="mxl-onec-render-") as directory:
-        work_directory = Path(directory)
-        job_path = work_directory / "job.json"
-        status_path = work_directory / "status.json"
-        log_path = work_directory / "1c.log"
-        job_payload = dict(payload)
-        job_payload["statusPath"] = str(status_path)
-        job_path.write_text(
-            json.dumps(job_payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        command = build_onec_command(settings, job_path, log_path)
-        try:
-            completed = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=settings.timeout_seconds,
+        with tempfile.TemporaryDirectory(prefix="mxl-onec-render-") as directory:
+            work_directory = Path(directory)
+            job_path = work_directory / "job.json"
+            status_path = work_directory / "status.json"
+            log_path = work_directory / "1c.log"
+            job_payload = dict(payload)
+            job_payload["statusPath"] = str(status_path)
+            job_path.write_text(
+                json.dumps(job_payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
             )
-        except subprocess.TimeoutExpired as error:
-            status_text = _read_text_if_present(status_path)
-            log_text = _read_text_if_present(log_path)
-            details = status_text or log_text or "no status or 1C log was produced"
-            raise OneCRenderError(
-                f"1C renderer timed out after {settings.timeout_seconds}s: {details}"
-            ) from error
+            command = build_onec_command(settings, job_path, log_path)
+            try:
+                completed = subprocess.run(
+                    command,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=settings.timeout_seconds,
+                )
+            except subprocess.TimeoutExpired as error:
+                status_text = _read_text_if_present(status_path)
+                log_text = _read_text_if_present(log_path)
+                details = status_text or log_text or "no status or 1C log was produced"
+                raise OneCRenderError(
+                    f"1C renderer timed out after {settings.timeout_seconds}s: {details}"
+                ) from error
 
-        status: dict[str, object] | None = None
-        try:
-            status = json.loads(status_path.read_text(encoding="utf-8-sig"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            pass
+            status: dict[str, object] | None = None
+            try:
+                status = json.loads(status_path.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeError, json.JSONDecodeError):
+                pass
 
-        if completed.returncode != 0:
-            details = (
-                _read_text_if_present(log_path)
-                or completed.stderr.strip()
-                or completed.stdout.strip()
-                or "no details"
-            )
-            raise OneCRenderError(
-                f"1C renderer exited with code {completed.returncode}: {details}"
-            )
-        if status is None:
-            details = _read_text_if_present(log_path) or "status file was not created"
-            raise OneCRenderError(f"1C renderer did not report completion: {details}")
-        if status.get("success") is not True:
-            raise OneCRenderError(str(status.get("error") or "1C renderer failed"))
-        missing = [str(target) for target in expected_targets if not target.is_file()]
-        if missing:
-            raise OneCRenderError(
-                "1C renderer reported success but HTML was not created: "
-                + ", ".join(missing)
-            )
+            if completed.returncode != 0:
+                details = (
+                    _read_text_if_present(log_path)
+                    or completed.stderr.strip()
+                    or completed.stdout.strip()
+                    or "no details"
+                )
+                raise OneCRenderError(
+                    f"1C renderer exited with code {completed.returncode}: {details}"
+                )
+            if status is None:
+                details = _read_text_if_present(log_path) or "status file was not created"
+                raise OneCRenderError(f"1C renderer did not report completion: {details}")
+            if status.get("success") is not True:
+                raise OneCRenderError(str(status.get("error") or "1C renderer failed"))
+            missing = [str(target) for target in expected_targets if not target.is_file()]
+            if missing:
+                raise OneCRenderError(
+                    "1C renderer reported success but HTML was not created: "
+                    + ", ".join(missing)
+                )
 
 
 def render_mxl_with_onec(
@@ -438,11 +546,25 @@ def render_mxl_with_onec(
     target = Path(output_path).expanduser().resolve()
     if not source.is_file():
         raise OneCRenderError(f"Input MXL was not found: {source}")
-    _run_onec_render_job(
-        {"inputPath": str(source), "outputPath": str(target)},
-        [target],
-        settings,
+    target.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".rendering", dir=target.parent
     )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    temporary.unlink()
+    try:
+        _run_onec_render_job(
+            {"inputPath": str(source), "outputPath": str(temporary)},
+            [temporary],
+            settings,
+        )
+        os.replace(temporary, target)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
     return target
 
@@ -454,30 +576,53 @@ def render_mxl_batch_with_onec(
     """Render multiple MXL documents in one 1C:Enterprise process."""
     if not items:
         raise OneCRenderError("Batch render manifest contains no items")
-    if not epf_supports_batch(settings.epf):
+    if not (settings.batch_capable or epf_supports_batch(settings.epf)):
         raise OneCRenderError(
             "Configured MxlToHtml.epf supports only one document; rebuild it "
             "from the updated batch-capable MxlToHtml.bsl"
         )
     resolved: dict[str, tuple[Path, Path]] = {}
+    seen_targets: set[Path] = set()
     for name, (input_path, output_path) in items.items():
         source = Path(input_path).expanduser().resolve()
         target = Path(output_path).expanduser().resolve()
         if not source.is_file():
             raise OneCRenderError(f"Input MXL was not found: {source}")
+        if target in seen_targets:
+            raise OneCRenderError(f"Duplicate batch output path: {target}")
+        seen_targets.add(target)
         resolved[name] = (source, target)
-    _run_onec_render_job(
-        {
-            "items": [
-                {
-                    "name": name,
-                    "inputPath": str(source),
-                    "outputPath": str(target),
-                }
-                for name, (source, target) in resolved.items()
-            ]
-        },
-        [target for _, target in resolved.values()],
-        settings,
-    )
+    temporary_targets: dict[str, Path] = {}
+    try:
+        for name, (_, target) in resolved.items():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, temporary_name = tempfile.mkstemp(
+                prefix=f".{target.name}.", suffix=".rendering", dir=target.parent
+            )
+            os.close(descriptor)
+            temporary = Path(temporary_name)
+            temporary.unlink()
+            temporary_targets[name] = temporary
+        _run_onec_render_job(
+            {
+                "items": [
+                    {
+                        "name": name,
+                        "inputPath": str(source),
+                        "outputPath": str(temporary_targets[name]),
+                    }
+                    for name, (source, _) in resolved.items()
+                ]
+            },
+            list(temporary_targets.values()),
+            settings,
+        )
+        for name, (_, target) in resolved.items():
+            os.replace(temporary_targets[name], target)
+    finally:
+        for temporary in temporary_targets.values():
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
     return {name: target for name, (_, target) in resolved.items()}

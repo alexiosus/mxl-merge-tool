@@ -5,9 +5,11 @@ import shlex
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.request
 from pathlib import Path
+from unittest.mock import patch
 
 from mxl_tool import parse_document, semantic_values
 from mxl_ui import (
@@ -16,7 +18,7 @@ from mxl_ui import (
     create_ui_server,
     render_ui,
 )
-from tests.test_mxl_tool import make_mxl
+from tests.test_mxl_tool import make_mxl, make_row_record_mxl
 
 
 class MxlUiTests(unittest.TestCase):
@@ -48,6 +50,90 @@ class MxlUiTests(unittest.TestCase):
         self.assertIn('id="dimToggle"', html)
         self.assertIn('id="zoomReset"', html)
         self.assertIn("function scrollFrameElementIntoView", html)
+        self.assertIn("frame-coordinate-columns", html)
+        self.assertIn("frame-coordinate-rows", html)
+        self.assertNotIn("function excelColumnName", html)
+        self.assertIn("label.textContent = String(segment.index)", html)
+        self.assertIn("function installFrameCoordinateRulers", html)
+        self.assertIn("const referenceRow = [...geometryByRow.entries()]", html)
+        self.assertIn('const rowElement = anchor.element.closest("tr") || anchor.element', html)
+        self.assertIn("frame._mxlCoordinateDocument !== frameDocument", html)
+        self.assertIn('frameDocument.addEventListener("wheel", refreshAfterInput', html)
+        self.assertIn("function setElementChip", html)
+        self.assertIn("function resolutionForRow", html)
+        self.assertIn('element.dataset.mxlChip = choice.toUpperCase()', html)
+        self.assertIn('data-mxl-chip-choice="local"', html)
+        self.assertIn("const placeholderBands", html)
+        self.assertIn("marker.dataset.mxlRowCoordinate = rowCoordinate", html)
+        self.assertIn('label.textContent = band.state === "unresolved" ? "?" : "×"', html)
+        self.assertIn(
+            'frameWindow.addEventListener("scroll", refreshRulers',
+            html,
+        )
+        self.assertIn("sourceScrollSyncSuspended", html)
+        self.assertIn("sourceFocusTargets.forEach(scrollFrameElementIntoView)", html)
+        self.assertIn("function focusPendingResultConflict", html)
+        self.assertIn("pendingResultFocusKey = key", html)
+        self.assertIn(
+            "} else if (wholeDocumentChoice() || !conflictByKey.structural) {",
+            html,
+        )
+        self.assertNotIn(
+            '!conflictByKey.structural && selectedRowStructureSource() !== ""',
+            html,
+        )
+        self.assertIn('choose(row.conflict_key, side, "", true)', html)
+        self.assertIn("focusResult = false", html)
+        self.assertIn(
+            'querySelectorAll("td, th, div, span, p, font")', html
+        )
+        self.assertIn("function renderRowConflictPlaceholders", html)
+        self.assertIn("mxl-row-placeholder", html)
+        self.assertIn("mxl-row-provisional-hidden", html)
+        self.assertIn("mxl-row-conflict-line", html)
+        self.assertIn("function conflictVisualElement", html)
+        self.assertIn("const requiresManualChoice", html)
+        self.assertIn("function draftRowStructureSource", html)
+        self.assertIn("draftRowStructurePreference = choice", html)
+        self.assertIn(
+            "const source = documentChoice || structuralChoice || draftSource",
+            html,
+        )
+        self.assertIn("function chooseWholeDocument", html)
+        self.assertIn("function fillUnresolved", html)
+        self.assertIn('id="undoButton"', html)
+        self.assertIn('id="redoButton"', html)
+        self.assertIn("function captureDecisionState", html)
+        self.assertIn("function commitDecisionHistory", html)
+        self.assertIn("function undoDecision", html)
+        self.assertIn("function redoDecision", html)
+        self.assertIn("function bindManualHistory", html)
+        self.assertIn("function chooseAll", html)
+        self.assertIn('const historyGroup = `manual:${key}`', html)
+        self.assertIn('if (event.shiftKey) redoDecision()', html)
+        self.assertIn("resolutions.document = {choice: side}", html)
+        self.assertIn("data-whole-document", html)
+        self.assertIn("Resolve pending", html)
+        self.assertIn(
+            "the selected row combination is incompatible and cannot be saved",
+            html,
+        )
+        self.assertIn("unresolved row conflicts are placeholders", html)
+        self.assertIn("Automatic row change", html)
+        self.assertIn("function coordinateForRow", html)
+        self.assertIn("Selected cell · ${selectedCoordinate", html)
+        self.assertIn("mxlCoordinate", html)
+        self.assertIn("data-mxl-chip", html)
+        self.assertIn("semantic-coordinate", html)
+        self.assertIn("structural-row-change", html)
+        self.assertIn("unresolved — choose Base, Local, or Remote", html)
+        self.assertNotIn("doc.body.prepend(marker)", html)
+        self.assertIn("function draftResolvedRowValue", html)
+        self.assertNotIn("mxl-row-conflict-badge", html)
+        self.assertIn("Showing the ${draftSource[0].toUpperCase()}", html)
+        self.assertNotIn(
+            "Resolve every row operation to preview the resulting row structure", html
+        )
         self.assertIn("scroller.scrollTop", html)
         self.assertNotIn("view.scrollTo", html)
         self.assertNotIn("resultElement?.scrollIntoView", html)
@@ -78,6 +164,152 @@ class MxlUiTests(unittest.TestCase):
         self.assertIn(b"<table>", sanitized)
         self.assertNotIn(b"<script", sanitized.lower())
         self.assertNotIn(b"alert(1)", sanitized)
+
+    def test_external_previews_are_deferred_from_ui_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {}
+            for side, value in (("base", "A"), ("local", "L"), ("remote", "R")):
+                path = root / f"{side}.mxl"
+                path.write_bytes(make_mxl([value]))
+                paths[side] = path
+            session = UiSession.from_paths(
+                str(paths["base"]),
+                str(paths["local"]),
+                str(paths["remote"]),
+                str(root / "merged.mxl"),
+            )
+            session.prepare_previews("converter {input} {output}", defer_external=True)
+            semantic_bundle = session.preview_bundle
+
+            def slow_build(*args, **kwargs):
+                time.sleep(0.15)
+                return semantic_bundle
+
+            with patch("mxl_ui.build_preview_bundle", side_effect=slow_build):
+                session.start_deferred_previews()
+            self.assertTrue(session.preview_loading)
+            deadline = time.monotonic() + 1
+            while session.preview_loading and time.monotonic() < deadline:
+                time.sleep(0.01)
+
+        self.assertFalse(session.preview_loading)
+
+    def test_model_exposes_individual_row_operation_choices(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {}
+            values = {
+                "base": ["Alpha", "Beta"],
+                "local": ["Alpha", "Inserted", "Beta"],
+                "remote": ["Alpha", "Beta remote"],
+            }
+            for side, side_values in values.items():
+                path = root / f"{side}.mxl"
+                path.write_bytes(make_mxl(side_values))
+                paths[side] = path
+            session = UiSession.from_paths(
+                str(paths["base"]),
+                str(paths["local"]),
+                str(paths["remote"]),
+                str(root / "merged.mxl"),
+            )
+
+            model = session.model()
+
+        row_conflict = next(
+            conflict for conflict in model["conflicts"] if conflict["kind"] == "row"
+        )
+        self.assertTrue(row_conflict["key"].startswith("row:add:"))
+        self.assertEqual("add", row_conflict["operation"])
+        self.assertEqual("absent", row_conflict["states"]["base"])
+        self.assertEqual("present", row_conflict["states"]["local"])
+        self.assertEqual("local", row_conflict["default_choice"])
+        self.assertFalse(row_conflict["requires_choice"])
+
+    def test_model_exposes_automatic_cell_change_as_overrideable_choice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {}
+            for side, value in (
+                ("base", "Alpha"),
+                ("local", "Alpha local"),
+                ("remote", "Alpha"),
+            ):
+                path = root / f"{side}.mxl"
+                path.write_bytes(make_mxl([value]))
+                paths[side] = path
+            session = UiSession.from_paths(
+                str(paths["base"]),
+                str(paths["local"]),
+                str(paths["remote"]),
+                str(root / "merged.mxl"),
+            )
+
+            model = session.model()
+
+        decision = next(
+            conflict
+            for conflict in model["conflicts"]
+            if conflict.get("automatic") and conflict["kind"] == "value"
+        )
+        row = model["previews"]["semantic"]["rows"][0]
+        self.assertEqual("local", decision["default_choice"])
+        self.assertFalse(decision["requires_choice"])
+        self.assertTrue(decision["manual_allowed"])
+        self.assertEqual(decision["key"], row["conflict_key"])
+        self.assertEqual(["field-0"], decision["field_ids"])
+        self.assertEqual(
+            {"base": ["R1C1"], "local": ["R1C1"], "remote": ["R1C1"]},
+            decision["coordinates"],
+        )
+
+    def test_deleted_edited_row_is_linked_to_preview_and_requires_a_choice(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            documents = {
+                "base": [(0, "Alpha"), (1, "Beta"), (2, "Gamma")],
+                "local": [(0, "Alpha"), (1, "Beta local"), (2, "Gamma")],
+                "remote": [(0, "Alpha"), (2, "Gamma")],
+            }
+            paths = {}
+            for side, rows in documents.items():
+                path = root / f"{side}.mxl"
+                path.write_bytes(make_row_record_mxl(rows))
+                paths[side] = path
+            session = UiSession.from_paths(
+                str(paths["base"]),
+                str(paths["local"]),
+                str(paths["remote"]),
+                str(root / "merged.mxl"),
+            )
+
+            model = session.model()
+
+        row_conflict = next(
+            conflict for conflict in model["conflicts"] if conflict["kind"] == "row"
+        )
+        linked_rows = [
+            row
+            for row in model["previews"]["semantic"]["rows"]
+            if row.get("row_conflict_key") == row_conflict["key"]
+        ]
+        self.assertIsNone(row_conflict["default_choice"])
+        self.assertTrue(row_conflict["requires_choice"])
+        self.assertEqual(2, row_conflict["row_number"])
+        self.assertTrue(row_conflict["field_ids"])
+        self.assertEqual(1, len(linked_rows))
+        self.assertEqual("Beta", linked_rows[0]["base"])
+        self.assertEqual("Beta local", linked_rows[0]["local"])
+        self.assertIsNone(linked_rows[0]["remote"])
+        self.assertEqual(
+            {"base": "R2C1", "local": "R2C1", "remote": None},
+            linked_rows[0]["coordinates"],
+        )
+        self.assertEqual(
+            {"base": 2, "local": 2, "remote": None},
+            row_conflict["row_coordinates"],
+        )
 
     def test_http_ui_saves_selected_resolution(self):
         with tempfile.TemporaryDirectory() as directory:
