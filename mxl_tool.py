@@ -504,17 +504,23 @@ def _align_rows(base: RowLayout, side: RowLayout) -> RowAlignment:
     unmatched_base: list[int] = []
     unmatched_side: list[int] = []
 
+    # A "replace" region is normally an edit in place, but SequenceMatcher also
+    # reports a swap of two rows that way — an endpoint swap comes back as two
+    # one-for-one replacements that are indistinguishable from edits here.
+    # Pairing them positionally right away hid the move and, once the other side
+    # touched the same rows, silently dropped one row's content. Defer it: offer
+    # these rows to the move pairing below first, and only pair what is left
+    # positionally.
+    replacements: list[tuple[int, int, int, int]] = []
     for tag, base_start, base_end, side_start, side_end in matcher.get_opcodes():
         if tag == "equal":
             for offset in range(base_end - base_start):
                 mapping[base_start + offset] = side_start + offset
             continue
         if tag == "replace":
-            shared = min(base_end - base_start, side_end - side_start)
-            for offset in range(shared):
-                mapping[base_start + offset] = side_start + offset
-            unmatched_base.extend(range(base_start + shared, base_end))
-            unmatched_side.extend(range(side_start + shared, side_end))
+            replacements.append((base_start, base_end, side_start, side_end))
+            unmatched_base.extend(range(base_start, base_end))
+            unmatched_side.extend(range(side_start, side_end))
             continue
         if tag == "delete":
             unmatched_base.extend(range(base_start, base_end))
@@ -543,8 +549,89 @@ def _align_rows(base: RowLayout, side: RowLayout) -> RowAlignment:
             paired_base.add(base_index)
             paired_side.add(side_index)
 
+    # Whatever the move pairing did not claim really is an edit in place, so the
+    # deferred replacements pair up positionally as before.
+    for base_start, base_end, side_start, side_end in replacements:
+        remaining_base = [
+            index for index in range(base_start, base_end) if index not in paired_base
+        ]
+        remaining_side = [
+            index for index in range(side_start, side_end) if index not in paired_side
+        ]
+        for base_index, side_index in zip(remaining_base, remaining_side):
+            mapping[base_index] = side_index
+            paired_base.add(base_index)
+            paired_side.add(side_index)
+
     inserted = tuple(index for index in unmatched_side if index not in paired_side)
     return RowAlignment(mapping, inserted, frozenset(moved))
+
+
+def _side_reshuffle_segments(alignment: RowAlignment) -> list[tuple[int, int, set[int]]]:
+    """Minimal Base-index ranges a side reorders among themselves.
+
+    The side's order of the matched Base rows is decomposed into the maximum
+    number of consecutive blocks that each permute only internally (the
+    "maximum chunks to sort" of the permutation). A block longer than one row
+    that contains an actual move is a self-contained reshuffle; the rows between
+    a move's origin and destination fall into the same block, so its range spans
+    the whole affected region.
+    """
+    matched = sorted(alignment.base_to_side)
+    if not matched:
+        return []
+    rank = {
+        base_index: position
+        for position, base_index in enumerate(
+            sorted(matched, key=lambda base_index: alignment.base_to_side[base_index])
+        )
+    }
+    segments: list[tuple[int, int, set[int]]] = []
+    prefix_max = -1
+    start = 0
+    for position, base_index in enumerate(matched):
+        prefix_max = max(prefix_max, rank[base_index])
+        if prefix_max == position:
+            if position > start:
+                members = set(matched[start : position + 1])
+                if members & alignment.moved:
+                    segments.append((matched[start], matched[position], members))
+            start = position + 1
+    return segments
+
+
+def _independent_move_groups(
+    alignments: Mapping[str, RowAlignment],
+) -> list[dict[str, object]]:
+    """Partition row moves into regions that can be ordered independently.
+
+    Each side's reshuffle segments are collected, then any segments whose
+    Base-index ranges overlap — within one side or across both — are merged.
+    Overlapping ranges cannot take their order from different sides without
+    producing an ambiguous sequence, so they become a single decision; disjoint
+    ranges stay separate and may each follow whichever side the user picks.
+    """
+    intervals: list[tuple[int, int, set[int]]] = []
+    for side in ("local", "remote"):
+        alignment = alignments.get(side)
+        if alignment is not None:
+            intervals.extend(_side_reshuffle_segments(alignment))
+    intervals.sort()
+    regions: list[dict[str, object]] = []
+    for interval_min, interval_max, members in intervals:
+        if regions and interval_min <= int(regions[-1]["max_base"]):
+            region = regions[-1]
+            region["max_base"] = max(int(region["max_base"]), interval_max)
+            region["members"].update(members)  # type: ignore[union-attr]
+        else:
+            regions.append(
+                {
+                    "min_base": interval_min,
+                    "max_base": interval_max,
+                    "members": set(members),
+                }
+            )
+    return regions
 
 
 def _row_summary(row: RowItem | None) -> str:
@@ -607,6 +694,26 @@ def _structural_row_conflicts(
     remote_alignment = _align_rows(base_layout, remote_layout)
     conflicts: list[dict[str, object]] = []
 
+    # Moves are decided per independent region, not per row: a row's move
+    # conflict carries the region it belongs to so the UI can resolve the whole
+    # block at once and the composer can order each region from its own side.
+    move_regions = _independent_move_groups(
+        {"local": local_alignment, "remote": remote_alignment}
+    )
+    # A move region owns its whole coordinate span: additions and deletions
+    # inside it are decided together with the row order, since one side's
+    # ordering cannot be combined with another side's structural edits in the
+    # same block without corrupting the layout.
+    region_by_position: dict[int, dict[str, object]] = {}
+    for ordinal, region in enumerate(move_regions):
+        region["id"] = f"movegroup:{ordinal}"
+        region["row_range"] = [
+            base_layout.rows[int(region["min_base"])].coordinate + 1,
+            base_layout.rows[int(region["max_base"])].coordinate + 1,
+        ]
+        for position in range(int(region["min_base"]), int(region["max_base"]) + 1):
+            region_by_position[position] = region
+
     def state(row: RowItem | None, moved: bool = False) -> str:
         if row is None:
             return "absent"
@@ -636,12 +743,16 @@ def _structural_row_conflicts(
             # Delete-vs-edit must be an explicit decision: silently preferring
             # the deleting side would discard a real change in the row.
             default_choice = None
+        region = region_by_position.get(base_index)
         conflicts.append(
             {
                 "kind": "row",
                 "key": f"row:{operation}:{base_index}",
                 "operation": operation,
                 "axis": "rows",
+                "base_index": base_index,
+                "move_group": region["id"] if region is not None else None,
+                "move_group_range": list(region["row_range"]) if region is not None else None,
                 "row_number": base_row.coordinate + 1,
                 "base": _row_summary(base_row),
                 "local": _row_summary(local_row),
@@ -689,12 +800,22 @@ def _structural_row_conflicts(
             "remote": "present" if remote_row is not None else "absent",
         }
         default_choice = _default_row_choice(states)
+        add_region = region_by_position.get(insertion_key[1])
         conflicts.append(
             {
                 "kind": "row",
                 "key": f"row:add:{insertion_key[1]}:{ordinal}",
                 "operation": "add",
                 "axis": "rows",
+                "insertion_anchor": insertion_key[1],
+                "move_group": add_region["id"] if add_region is not None else None,
+                "move_group_range": (
+                    list(add_region["row_range"]) if add_region is not None else None
+                ),
+                "row_indexes": {
+                    "local": local_index,
+                    "remote": remote_index,
+                },
                 "row_number": (
                     local_row.coordinate + 1
                     if local_row is not None
@@ -720,6 +841,30 @@ def _structural_row_conflicts(
 
     if not conflicts:
         return None
+
+    # A move region is ordered from one side. When its members' automatic
+    # choices do not agree on a single side — e.g. Local and Remote reordered
+    # overlapping rows — the region has no safe automatic resolution and must be
+    # decided explicitly. Enforced per region so an unrelated unresolved
+    # conflict elsewhere does not hide the contradiction (the global check below
+    # only runs when every conflict already has a default).
+    region_by_group: dict[str, list[dict[str, object]]] = {}
+    for conflict in conflicts:
+        group = conflict.get("move_group")
+        if isinstance(group, str):
+            region_by_group.setdefault(group, []).append(conflict)
+    for group_conflicts in region_by_group.values():
+        default_resolutions = {
+            str(conflict["key"]): {"choice": conflict.get("default_choice")}
+            for conflict in group_conflicts
+        }
+        consistent = all(
+            conflict.get("default_choice") is not None for conflict in group_conflicts
+        ) and bool(_selected_row_source(group_conflicts, default_resolutions))
+        if not consistent:
+            for conflict in group_conflicts:
+                conflict["default_choice"] = None
+
     if all(conflict.get("default_choice") is not None for conflict in conflicts):
         defaults_are_compatible = any(
             all(
@@ -779,15 +924,55 @@ def _structural_conflict(
 def _align_entry_indexes(base: Sequence[str], side: Sequence[str]) -> dict[int, int]:
     mapping: dict[int, int] = {}
     matcher = _sequence_matcher(base, side)
+    # Mirrors _align_rows: a "replace" span may be an edit in place, but it is
+    # also how a swap is reported. Pairing it positionally straight away turns a
+    # value that merely moved into an edit of whatever now sits at its old
+    # position, which then gets applied on top of a chosen row structure and
+    # overwrites the row that moved there.
+    replacements: list[tuple[int, int, int, int]] = []
+    unmatched_base: list[int] = []
+    unmatched_side: list[int] = []
     for tag, base_start, base_end, side_start, side_end in matcher.get_opcodes():
         if tag == "equal":
-            shared = base_end - base_start
-        elif tag == "replace":
-            shared = min(base_end - base_start, side_end - side_start)
-        else:
-            shared = 0
-        for offset in range(shared):
-            mapping[base_start + offset] = side_start + offset
+            for offset in range(base_end - base_start):
+                mapping[base_start + offset] = side_start + offset
+            continue
+        if tag == "replace":
+            replacements.append((base_start, base_end, side_start, side_end))
+            unmatched_base.extend(range(base_start, base_end))
+            unmatched_side.extend(range(side_start, side_end))
+            continue
+        if tag == "delete":
+            unmatched_base.extend(range(base_start, base_end))
+        elif tag == "insert":
+            unmatched_side.extend(range(side_start, side_end))
+
+    # Only exact values that are unique on both sides of the differing regions
+    # are paired, so repeated cell text cannot be linked across the document.
+    base_by_value: dict[str, list[int]] = {}
+    side_by_value: dict[str, list[int]] = {}
+    for index in unmatched_base:
+        base_by_value.setdefault(base[index], []).append(index)
+    for index in unmatched_side:
+        side_by_value.setdefault(side[index], []).append(index)
+    paired_base: set[int] = set()
+    paired_side: set[int] = set()
+    for value, base_indexes in base_by_value.items():
+        side_indexes = side_by_value.get(value, [])
+        if len(base_indexes) == len(side_indexes) == 1:
+            mapping[base_indexes[0]] = side_indexes[0]
+            paired_base.add(base_indexes[0])
+            paired_side.add(side_indexes[0])
+
+    for base_start, base_end, side_start, side_end in replacements:
+        remaining_base = [
+            index for index in range(base_start, base_end) if index not in paired_base
+        ]
+        remaining_side = [
+            index for index in range(side_start, side_end) if index not in paired_side
+        ]
+        for base_index, side_index in zip(remaining_base, remaining_side):
+            mapping[base_index] = side_index
     return mapping
 
 
@@ -859,12 +1044,1126 @@ def _selected_row_source(
     return candidates[0] if candidates else ""
 
 
+def _row_record_raw(
+    document: MxlDocument,
+    row: RowItem,
+    coordinate: int,
+    style_indexes: Mapping[int, int] | None = None,
+) -> str:
+    start = document.tokens[row.start_token].start
+    end = document.tokens[row.end_token - 1].end
+    raw = document.text[start:end]
+    replacements: list[tuple[int, int, str]] = []
+    coordinate_token = document.tokens[row.start_token]
+    replacements.append(
+        (
+            coordinate_token.start - start,
+            coordinate_token.end - start,
+            str(coordinate),
+        )
+    )
+    if style_indexes:
+        for token_index in _row_style_token_indexes(document, row):
+            token = document.tokens[token_index]
+            try:
+                source_index = int(token.value)
+            except ValueError:
+                continue
+            target_index = style_indexes.get(source_index)
+            if target_index is not None and target_index != source_index:
+                replacements.append(
+                    (token.start - start, token.end - start, str(target_index))
+                )
+    for relative_start, relative_end, replacement in sorted(
+        replacements, reverse=True
+    ):
+        raw = raw[:relative_start] + replacement + raw[relative_end:]
+    return raw
+
+
+def _row_cells(
+    document: MxlDocument, row: RowItem
+) -> dict[int, StructureNode]:
+    children = document.root.children
+    first_column = _integer_child(document, children[row.start_child + 1])
+    if first_column is None:
+        return {}
+    result: dict[int, StructureNode] = {}
+    cell_children = children[row.start_child + 4 : row.end_child]
+    for offset in range(0, len(cell_children), 2):
+        cell = cell_children[offset]
+        if not isinstance(cell, StructureNode):
+            continue
+        if offset == 0:
+            column = first_column
+        else:
+            column = _integer_child(document, cell_children[offset - 1])
+            if column is None:
+                continue
+        result[column] = cell
+    return result
+
+
+def _cell_style_token_index(
+    document: MxlDocument, cell: StructureNode
+) -> int | None:
+    if len(cell.children) < 2:
+        return None
+    child = cell.children[1]
+    if not isinstance(child, int):
+        return None
+    try:
+        int(document.tokens[child].value)
+    except ValueError:
+        return None
+    return child
+
+
+def _row_style_token_indexes(
+    document: MxlDocument, row: RowItem
+) -> list[int]:
+    indexes: list[int] = []
+    for cell in _row_cells(document, row).values():
+        token_index = _cell_style_token_index(document, cell)
+        if token_index is not None:
+            indexes.append(token_index)
+    return indexes
+
+
+def _style_index_mapping(
+    base_layout: RowLayout,
+    donor_name: str,
+    donor: MxlDocument,
+    donor_layout: RowLayout,
+    host_name: str,
+    host: MxlDocument,
+    host_layout: RowLayout,
+    alignments: Mapping[str, RowAlignment],
+) -> dict[int, int]:
+    if donor is host:
+        return {}
+    donor_alignment = (
+        RowAlignment(
+            {index: index for index in range(len(base_layout.rows))},
+            (),
+            frozenset(),
+        )
+        if donor_name == "base"
+        else alignments[donor_name]
+    )
+    host_alignment = (
+        RowAlignment(
+            {index: index for index in range(len(base_layout.rows))},
+            (),
+            frozenset(),
+        )
+        if host_name == "base"
+        else alignments[host_name]
+    )
+    votes: dict[int, dict[int, int]] = {}
+    host_styles: set[int] = set()
+    for row in host_layout.rows:
+        for token_index in _row_style_token_indexes(host, row):
+            host_styles.add(int(host.tokens[token_index].value))
+
+    for base_index in range(len(base_layout.rows)):
+        donor_index = donor_alignment.base_to_side.get(base_index)
+        host_index = host_alignment.base_to_side.get(base_index)
+        if donor_index is None or host_index is None:
+            continue
+        donor_cells = _row_cells(donor, donor_layout.rows[donor_index])
+        host_cells = _row_cells(host, host_layout.rows[host_index])
+        for column in donor_cells.keys() & host_cells.keys():
+            donor_token = _cell_style_token_index(donor, donor_cells[column])
+            host_token = _cell_style_token_index(host, host_cells[column])
+            if donor_token is None or host_token is None:
+                continue
+            donor_style = int(donor.tokens[donor_token].value)
+            host_style = int(host.tokens[host_token].value)
+            targets = votes.setdefault(donor_style, {})
+            targets[host_style] = targets.get(host_style, 0) + 1
+
+    mapping: dict[int, int] = {}
+    for donor_style, targets in votes.items():
+        ranked = sorted(targets.items(), key=lambda item: (-item[1], item[0]))
+        if ranked:
+            mapping[donor_style] = ranked[0][0]
+    for row in donor_layout.rows:
+        for token_index in _row_style_token_indexes(donor, row):
+            donor_style = int(donor.tokens[token_index].value)
+            if donor_style not in mapping and donor_style in host_styles:
+                mapping[donor_style] = donor_style
+    return mapping
+
+
+def _node_raw(document: MxlDocument, node: StructureNode) -> str:
+    return document.text[
+        document.tokens[node.start].start : document.tokens[node.end - 1].end
+    ]
+
+
+def _rewrite_node_raw(
+    document: MxlDocument,
+    node: StructureNode,
+    replacements: Mapping[int, int],
+) -> str:
+    start = document.tokens[node.start].start
+    raw = _node_raw(document, node)
+    spans = [
+        (
+            document.tokens[token_index].start - start,
+            document.tokens[token_index].end - start,
+            str(value),
+        )
+        for token_index, value in replacements.items()
+    ]
+    for relative_start, relative_end, value in sorted(spans, reverse=True):
+        raw = raw[:relative_start] + value + raw[relative_end:]
+    return raw
+
+
+def _direct_integer_tokens(
+    document: MxlDocument, node: StructureNode
+) -> list[int]:
+    result: list[int] = []
+    for child in node.children:
+        if not isinstance(child, int):
+            continue
+        try:
+            int(document.tokens[child].value)
+        except ValueError:
+            continue
+        result.append(child)
+    return result
+
+
+def _row_metadata_sections(
+    document: MxlDocument, layout: RowLayout
+) -> dict[str, object] | None:
+    children = document.root.children
+    tail = layout.end_child
+    if tail + 6 >= len(children):
+        return None
+    property_count = _integer_child(document, children[tail + 5])
+    if property_count is None or property_count < 0:
+        return None
+    property_end = tail + 6 + property_count * 2
+    if property_end + 3 >= len(children):
+        return None
+    property_children = children[tail + 6 : property_end]
+    if any(not isinstance(child, int) for child in property_children):
+        return None
+    properties: list[tuple[int, int]] = []
+    for offset in range(0, len(property_children), 2):
+        coordinate = _integer_child(document, property_children[offset])
+        value = _integer_child(document, property_children[offset + 1])
+        if coordinate is None or value is None:
+            return None
+        properties.append((coordinate, value))
+
+    range_count_index = property_end + 2
+    range_count = _integer_child(document, children[range_count_index])
+    if range_count is None or range_count < 0:
+        return None
+    range_end = range_count_index + 1 + range_count * 2
+    if range_end + 6 >= len(children):
+        return None
+    ranges: list[StructureNode] = []
+    for offset in range(range_count):
+        node = children[range_count_index + 1 + offset * 2]
+        marker = _integer_child(
+            document, children[range_count_index + 2 + offset * 2]
+        )
+        if not isinstance(node, StructureNode) or marker != -1:
+            return None
+        integers = _direct_integer_tokens(document, node)
+        if len(integers) < 2:
+            return None
+        ranges.append(node)
+
+    grouping_index = range_end + 3
+    grouping = children[grouping_index]
+    named_areas = children[grouping_index + 3]
+    if not isinstance(grouping, StructureNode) or not isinstance(
+        named_areas, StructureNode
+    ):
+        return None
+    return {
+        "property_count_index": tail + 5,
+        "property_end": property_end,
+        "properties": properties,
+        "range_count_index": range_count_index,
+        "range_end": range_end,
+        "ranges": ranges,
+        "grouping": grouping,
+        "named_areas": named_areas,
+    }
+
+
+def _apply_row_boundary_operations(
+    start: int,
+    end: int,
+    operations: Sequence[Mapping[str, object]],
+    *,
+    donor_ranges: Mapping[tuple[str, int], Sequence[tuple[int, int]]] | None = None,
+) -> tuple[int, int] | None:
+    for operation in operations:
+        kind = operation["kind"]
+        coordinate = int(operation["coordinate"])
+        if kind == "delete":
+            if end < coordinate:
+                continue
+            if start > coordinate:
+                start -= 1
+                end -= 1
+            else:
+                end -= 1
+                if end < start:
+                    return None
+        elif kind == "insert":
+            if start >= coordinate:
+                start += 1
+                end += 1
+            elif start < coordinate <= end:
+                end += 1
+            elif end == coordinate - 1 and donor_ranges is not None:
+                donor_name = str(operation.get("donor_name", ""))
+                donor_coordinate = operation.get("donor_coordinate")
+                if isinstance(donor_coordinate, int):
+                    ranges = donor_ranges.get((donor_name, donor_coordinate), ())
+                    if any(
+                        donor_start == start
+                        and donor_start <= donor_coordinate <= donor_end
+                        for donor_start, donor_end in ranges
+                    ):
+                        end += 1
+    return start, end
+
+
+def _nested_range_token_replacements(
+    document: MxlDocument,
+    node: StructureNode,
+    operations: Sequence[Mapping[str, object]],
+) -> dict[int, int]:
+    replacements: dict[int, int] = {}
+
+    def visit(candidate: StructureNode) -> None:
+        children = candidate.children
+        if (
+            len(children) == 6
+            and all(isinstance(children[index], int) for index in range(5))
+            and isinstance(children[5], int)
+        ):
+            first = children[0]
+            assert isinstance(first, int)
+            if document.tokens[first].value in {"1", "3"}:
+                row_start_token = children[2]
+                row_end_token = children[4]
+                assert isinstance(row_start_token, int)
+                assert isinstance(row_end_token, int)
+                try:
+                    row_start = int(document.tokens[row_start_token].value)
+                    row_end = int(document.tokens[row_end_token].value)
+                except ValueError:
+                    pass
+                else:
+                    transformed = _apply_row_boundary_operations(
+                        row_start, row_end, operations
+                    )
+                    if transformed is not None:
+                        replacements[row_start_token] = transformed[0]
+                        replacements[row_end_token] = transformed[1]
+        for child in children:
+            if isinstance(child, StructureNode):
+                visit(child)
+
+    visit(node)
+    return replacements
+
+
+def _row_metadata_replacements(
+    source: MxlDocument,
+    source_layout: RowLayout,
+    operations: Sequence[Mapping[str, object]],
+    documents: Mapping[str, MxlDocument],
+    layouts: Mapping[str, RowLayout | None],
+) -> list[tuple[int, int, str]]:
+    if not operations:
+        return []
+    sections = _row_metadata_sections(source, source_layout)
+    if sections is None:
+        if len(source.root.children) - source_layout.end_child <= 6:
+            return []
+        raise ValueError("The MXL row metadata layout is not recognized")
+    children = source.root.children
+    replacements: list[tuple[int, int, str]] = []
+
+    properties = list(sections["properties"])  # type: ignore[arg-type]
+    for operation in operations:
+        coordinate = int(operation["coordinate"])
+        if operation["kind"] == "delete":
+            properties = [
+                (
+                    current - 1 if current > coordinate else current,
+                    value,
+                )
+                for current, value in properties
+                if current != coordinate
+            ]
+        else:
+            properties = [
+                (
+                    current + 1 if current >= coordinate else current,
+                    value,
+                )
+                for current, value in properties
+            ]
+            donor_name = str(operation.get("donor_name", ""))
+            donor_coordinate = operation.get("donor_coordinate")
+            donor = documents.get(donor_name)
+            donor_layout = layouts.get(donor_name)
+            if donor is not None and donor_layout is not None and isinstance(
+                donor_coordinate, int
+            ):
+                donor_sections = _row_metadata_sections(donor, donor_layout)
+                if donor_sections is not None:
+                    donor_properties = dict(
+                        donor_sections["properties"]  # type: ignore[arg-type]
+                    )
+                    if donor_coordinate in donor_properties:
+                        properties.append(
+                            (coordinate, donor_properties[donor_coordinate])
+                        )
+            properties.sort()
+
+    property_count_index = int(sections["property_count_index"])
+    property_end = int(sections["property_end"])
+    count_child = children[property_count_index]
+    assert isinstance(count_child, int)
+    count_token = source.tokens[count_child]
+    if property_end > property_count_index + 1:
+        last_child = children[property_end - 1]
+        assert isinstance(last_child, int)
+        block_end = source.tokens[last_child].end
+        first_child = children[property_count_index + 1]
+        assert isinstance(first_child, int)
+        separator = source.text[
+            count_token.end : source.tokens[first_child].start
+        ]
+    else:
+        block_end = count_token.end
+        separator = ",\r\n"
+    property_values = [str(len(properties))]
+    for coordinate, value in properties:
+        property_values.extend((str(coordinate), str(value)))
+    replacements.append(
+        (count_token.start, block_end, separator.join(property_values))
+    )
+
+    donor_ranges: dict[tuple[str, int], Sequence[tuple[int, int]]] = {}
+    for operation in operations:
+        if operation["kind"] != "insert":
+            continue
+        donor_name = str(operation.get("donor_name", ""))
+        donor_coordinate = operation.get("donor_coordinate")
+        donor = documents.get(donor_name)
+        donor_layout = layouts.get(donor_name)
+        if donor is None or donor_layout is None or not isinstance(
+            donor_coordinate, int
+        ):
+            continue
+        donor_sections = _row_metadata_sections(donor, donor_layout)
+        if donor_sections is None:
+            continue
+        ranges: list[tuple[int, int]] = []
+        for node in donor_sections["ranges"]:  # type: ignore[union-attr]
+            integer_tokens = _direct_integer_tokens(donor, node)
+            ranges.append(
+                (
+                    int(donor.tokens[integer_tokens[0]].value),
+                    int(donor.tokens[integer_tokens[1]].value),
+                )
+            )
+        donor_ranges[(donor_name, donor_coordinate)] = ranges
+
+    range_count_index = int(sections["range_count_index"])
+    range_end = int(sections["range_end"])
+    range_count_child = children[range_count_index]
+    assert isinstance(range_count_child, int)
+    range_count_token = source.tokens[range_count_child]
+    range_separator = source.text[
+        range_count_token.end :
+        source.tokens[
+            (
+                sections["ranges"][0].start  # type: ignore[index,union-attr]
+                if sections["ranges"]  # type: ignore[truthy-bool]
+                else range_count_child
+            )
+        ].start
+    ] if sections["ranges"] else ",\r\n"
+    rendered_ranges: list[str] = []
+    for node in sections["ranges"]:  # type: ignore[union-attr]
+        integer_tokens = _direct_integer_tokens(source, node)
+        start = int(source.tokens[integer_tokens[0]].value)
+        end = int(source.tokens[integer_tokens[1]].value)
+        transformed = _apply_row_boundary_operations(
+            start, end, operations, donor_ranges=donor_ranges
+        )
+        if transformed is None:
+            continue
+        rendered_ranges.extend(
+            (
+                _rewrite_node_raw(
+                    source,
+                    node,
+                    {
+                        integer_tokens[0]: transformed[0],
+                        integer_tokens[1]: transformed[1],
+                    },
+                ),
+                "-1",
+            )
+        )
+    if range_end > range_count_index + 1:
+        last_range_child = children[range_end - 1]
+        assert isinstance(last_range_child, int)
+        range_block_end = source.tokens[last_range_child].end
+    else:
+        range_block_end = range_count_token.end
+    range_values = [str(len(rendered_ranges) // 2), *rendered_ranges]
+    replacements.append(
+        (
+            range_count_token.start,
+            range_block_end,
+            range_separator.join(range_values),
+        )
+    )
+
+    grouping = sections["grouping"]
+    assert isinstance(grouping, StructureNode)
+    grouping_replacements: dict[int, int] = {}
+    for child in grouping.children:
+        if not isinstance(child, StructureNode):
+            continue
+        integers = _direct_integer_tokens(source, child)
+        if len(integers) < 4:
+            continue
+        start = int(source.tokens[integers[1]].value)
+        end = int(source.tokens[integers[3]].value)
+        transformed = _apply_row_boundary_operations(start, end, operations)
+        if transformed is not None:
+            grouping_replacements[integers[1]] = transformed[0]
+            grouping_replacements[integers[3]] = transformed[1]
+    if grouping_replacements:
+        replacements.append(
+            (
+                source.tokens[grouping.start].start,
+                source.tokens[grouping.end - 1].end,
+                _rewrite_node_raw(source, grouping, grouping_replacements),
+            )
+        )
+
+    named_areas = sections["named_areas"]
+    assert isinstance(named_areas, StructureNode)
+    named_replacements = _nested_range_token_replacements(
+        source, named_areas, operations
+    )
+    if named_replacements:
+        replacements.append(
+            (
+                source.tokens[named_areas.start].start,
+                source.tokens[named_areas.end - 1].end,
+                _rewrite_node_raw(source, named_areas, named_replacements),
+            )
+        )
+    return replacements
+
+
+def _compose_mixed_row_structure(
+    base: MxlDocument,
+    local: MxlDocument,
+    remote: MxlDocument,
+    row_conflicts: Sequence[Mapping[str, object]],
+    resolutions: Mapping[str, Resolution],
+) -> tuple[MxlDocument | None, str | None] | tuple[
+    MxlDocument, None, dict[int, int] | None
+]:
+    """Build a row stream from compatible per-operation decisions.
+
+    Ordering is taken from the side selected by move decisions. Independent
+    keep/delete decisions are then applied to that skeleton; rows absent from
+    the ordering side are inserted between their nearest surviving Base
+    neighbours. This supports combinations such as keeping an edited Local row
+    while retaining Remote row moves.
+    """
+    documents = {"base": base, "local": local, "remote": remote}
+    layouts = {side: _row_layout(document) for side, document in documents.items()}
+    if any(layout is None for layout in layouts.values()):
+        return None, "The row layout cannot be reconstructed safely"
+    base_layout = layouts["base"]
+    local_layout = layouts["local"]
+    remote_layout = layouts["remote"]
+    assert base_layout is not None and local_layout is not None and remote_layout is not None
+    if not (
+        base_layout.kind == local_layout.kind == remote_layout.kind == "records"
+    ):
+        return None, "Mixed row structures are supported only for normal MXL row records"
+
+    unresolved = [
+        str(conflict["key"])
+        for conflict in row_conflicts
+        if str(conflict["key"]) not in resolutions
+    ]
+    if unresolved:
+        return None, f"{len(unresolved)} row operation(s) have not been resolved"
+
+    alignments = {
+        "local": _align_rows(base_layout, local_layout),
+        "remote": _align_rows(base_layout, remote_layout),
+    }
+
+    # Row order is decided per independent region. Each region takes its
+    # ordering from one side, so disjoint moves on Local and Remote can be
+    # accepted together. Base is the composition host; a region that follows a
+    # reordering side is expressed as delete + reinsert so the existing
+    # coordinate-metadata machinery carries every row's donor metadata.
+    move_conflicts = [
+        conflict for conflict in row_conflicts if conflict.get("operation") == "move"
+    ]
+    regions = _independent_move_groups(alignments)
+    region_side: dict[int, str] = {}
+    for ordinal, region in enumerate(regions):
+        region["id"] = f"movegroup:{ordinal}"
+        members = {int(member) for member in region["members"]}  # type: ignore[union-attr]
+        region_moves = [
+            conflict
+            for conflict in move_conflicts
+            if isinstance(conflict.get("base_index"), int)
+            and int(conflict["base_index"]) in members
+        ]
+        side = _selected_row_source(region_moves, resolutions)
+        if side is None:
+            return None, "Some row moves have not been resolved"
+        if not side:
+            return None, "The selected row moves define contradictory ordering"
+        region_side[ordinal] = side
+
+    order_source = "base"
+    side_to_base: dict[str, dict[int, int]] = {
+        "base": {index: index for index in range(len(base_layout.rows))},
+        "local": {
+            side_index: base_index
+            for base_index, side_index in alignments["local"].base_to_side.items()
+        },
+        "remote": {
+            side_index: base_index
+            for base_index, side_index in alignments["remote"].base_to_side.items()
+        },
+    }
+    additions_by_side: dict[str, dict[int, tuple[str, str]]] = {
+        "local": {},
+        "remote": {},
+    }
+    addition_conflicts: dict[tuple[str, str], Mapping[str, object]] = {}
+    base_conflicts: dict[int, Mapping[str, object]] = {}
+    selected: set[tuple[str, object]] = {
+        ("base", index) for index in range(len(base_layout.rows))
+    }
+
+    for conflict in row_conflicts:
+        key = str(conflict["key"])
+        choice = resolutions[key].get("choice")
+        states = conflict.get("states")
+        if choice not in {"base", "local", "remote"} or not isinstance(states, Mapping):
+            return None, f"Invalid row resolution for {key}"
+        operation = conflict.get("operation")
+        if operation in {"delete", "move"}:
+            base_index = conflict.get("base_index")
+            if not isinstance(base_index, int):
+                return None, f"Missing Base row identity for {key}"
+            base_conflicts[base_index] = conflict
+            if states.get(choice) == "absent":
+                selected.discard(("base", base_index))
+        elif operation == "add":
+            identity = ("add", key)
+            addition_conflicts[identity] = conflict
+            if states.get(choice) == "present":
+                selected.add(identity)
+            indexes = conflict.get("row_indexes")
+            if isinstance(indexes, Mapping):
+                for side in ("local", "remote"):
+                    side_index = indexes.get(side)
+                    if isinstance(side_index, int):
+                        additions_by_side[side][side_index] = identity
+
+    source_layout = layouts[order_source]
+    source_document = documents[order_source]
+    assert source_layout is not None
+    entries: list[dict[str, object]] = []
+    for side_index, row in enumerate(source_layout.rows):
+        base_index = side_to_base[order_source].get(side_index)
+        if base_index is not None:
+            identity: tuple[str, object] = ("base", base_index)
+        else:
+            identity = additions_by_side.get(order_source, {}).get(
+                side_index, ("opaque", f"{order_source}:{side_index}")
+            )
+        entries.append(
+            {
+                "identity": identity,
+                "source_name": order_source,
+                "document": source_document,
+                "row": row,
+                "coordinate": row.coordinate,
+            }
+        )
+
+    # Each region that follows a reordering side re-sequences its surviving span
+    # rows into that side's order. The reorder itself is applied further down,
+    # after deletions and additions have settled the coordinates.
+    reposition_order: dict[int, list[int]] = {}
+    for ordinal, region in enumerate(regions):
+        side = region_side[ordinal]
+        if side == "base":
+            continue
+        low = int(region["min_base"])
+        high = int(region["max_base"])
+        span = [
+            index
+            for index in range(low, high + 1)
+            if ("base", index) in selected
+        ]
+        alignment = alignments[side]
+        ordered = sorted(
+            span,
+            key=lambda index: (
+                (0, alignment.base_to_side[index])
+                if index in alignment.base_to_side
+                else (1, index)
+            ),
+        )
+        if ordered == span:
+            # The chosen side keeps Base order across this span: nothing to move.
+            continue
+        reposition_order[ordinal] = ordered
+
+    # A region whose span also gains or loses rows cannot be a pure permutation
+    # of Base rows: reordering rows one by one would tear its blocks apart
+    # (titles, spacers, headers). Take the chosen side's whole sub-layout for the
+    # span instead, so those blocks stay intact and correctly formatted.
+    structural_regions: dict[int, dict[str, object]] = {}
+    region_owned_base: set[int] = set()
+    region_owned_adds: set[tuple[str, object]] = set()
+    for ordinal, region in enumerate(regions):
+        side = region_side[ordinal]
+        if side == "base":
+            continue
+        members = [
+            conflict
+            for conflict in row_conflicts
+            if conflict.get("move_group") == region["id"]
+        ]
+        if not any(
+            conflict.get("operation") in {"add", "delete"} for conflict in members
+        ):
+            continue
+        low = int(region["min_base"])
+        high = int(region["max_base"])
+        side_layout = layouts[side]
+        assert side_layout is not None
+        side_indices = [
+            side_index
+            for index in range(low, high + 1)
+            if (side_index := alignments[side].base_to_side.get(index)) is not None
+        ]
+        if not side_indices:
+            continue
+        reposition_order.pop(ordinal, None)
+        structural_regions[ordinal] = {
+            "side": side,
+            "low": low,
+            "rows": side_layout.rows[min(side_indices) : max(side_indices) + 1],
+        }
+        region_owned_base.update(range(low, high + 1))
+        for conflict in members:
+            if conflict.get("operation") == "add":
+                region_owned_adds.add(("add", str(conflict["key"])))
+
+    # Rows and additions the structural regions replace must leave the ordinary
+    # delete/insert passes alone; the sub-layout below reintroduces them.
+    selected = {
+        identity
+        for identity in selected
+        if not (
+            isinstance(identity, tuple)
+            and (
+                (identity[0] == "base" and int(identity[1]) in region_owned_base)
+                or (identity[0] == "add" and identity in region_owned_adds)
+            )
+        )
+    }
+
+    # Removing a row from the Base skeleton shifts following row coordinates
+    # while preserving any pre-existing gaps in that skeleton.
+    metadata_operations: list[dict[str, object]] = []
+    for entry in list(entries):
+        identity = entry["identity"]
+        if (
+            isinstance(identity, tuple)
+            and identity[0] in {"base", "add"}
+            and identity not in selected
+        ):
+            removed_coordinate = int(entry["coordinate"])
+            metadata_operations.append(
+                {"kind": "delete", "coordinate": removed_coordinate}
+            )
+            entries.remove(entry)
+            for candidate in entries:
+                if int(candidate["coordinate"]) > removed_coordinate:
+                    candidate["coordinate"] = int(candidate["coordinate"]) - 1
+
+    def insertion_position(identity: tuple[str, object]) -> int:
+        if identity[0] == "base":
+            anchor = int(identity[1])
+        else:
+            conflict = addition_conflicts[identity]
+            insertion_anchor = conflict.get("insertion_anchor")
+            anchor = int(insertion_anchor) if isinstance(insertion_anchor, int) else len(base_layout.rows)
+        base_positions = {
+            int(candidate_identity[1]): index
+            for index, candidate in enumerate(entries)
+            if isinstance((candidate_identity := candidate["identity"]), tuple)
+            and candidate_identity[0] == "base"
+        }
+        successors = [index for index in base_positions if index >= anchor]
+        predecessors = [index for index in base_positions if index < anchor]
+        successor = min(successors) if successors else None
+        predecessor = max(predecessors) if predecessors else None
+        if successor is not None and predecessor is not None:
+            successor_position = base_positions[successor]
+            predecessor_position = base_positions[predecessor]
+            if predecessor_position < successor_position:
+                return successor_position
+            return predecessor_position + 1
+        if successor is not None:
+            return base_positions[successor]
+        if predecessor is not None:
+            return base_positions[predecessor] + 1
+        return len(entries)
+
+    def selected_row(
+        identity: tuple[str, object]
+    ) -> tuple[str, MxlDocument, RowItem] | None:
+        if identity[0] == "add":
+            conflict = addition_conflicts[identity]
+            choice = str(resolutions[str(conflict["key"])].get("choice"))
+            indexes = conflict.get("row_indexes")
+            if not isinstance(indexes, Mapping):
+                return None
+            side_index = indexes.get(choice)
+            layout = layouts.get(choice)
+            if not isinstance(side_index, int) or layout is None:
+                return None
+            return choice, documents[choice], layout.rows[side_index]
+
+        base_index = int(identity[1])
+        conflict = base_conflicts.get(base_index)
+        preferred = (
+            str(resolutions[str(conflict["key"])].get("choice"))
+            if conflict is not None
+            else "base"
+        )
+        for side in (preferred, "local", "remote", "base"):
+            if side == "base":
+                return "base", base, base_layout.rows[base_index]
+            side_index = alignments[side].base_to_side.get(base_index)
+            layout = layouts[side]
+            if side_index is not None and layout is not None:
+                return side, documents[side], layout.rows[side_index]
+        return None
+
+    missing = [identity for identity in selected if identity not in {entry["identity"] for entry in entries}]
+    missing.sort(
+        key=lambda identity: (
+            int(identity[1])
+            if identity[0] == "base"
+            else int(addition_conflicts[identity].get("insertion_anchor") or 0),
+            0 if identity[0] == "base" else 1,
+            str(identity[1]),
+        )
+    )
+    for identity in missing:
+        selected_source = selected_row(identity)
+        if selected_source is None:
+            return None, f"Unable to materialize selected row {identity[1]}"
+        donor_name, document, row = selected_source
+        position = insertion_position(identity)
+        if position < len(entries):
+            coordinate = int(entries[position]["coordinate"])
+            for candidate in entries:
+                if int(candidate["coordinate"]) >= coordinate:
+                    candidate["coordinate"] = int(candidate["coordinate"]) + 1
+        elif entries:
+            coordinate = int(entries[-1]["coordinate"]) + 1
+        else:
+            coordinate = 0
+        metadata_operations.append(
+            {
+                "kind": "insert",
+                "coordinate": coordinate,
+                "donor_name": donor_name,
+                "donor_coordinate": row.coordinate,
+            }
+        )
+        entries.insert(
+            position,
+            {
+                "identity": identity,
+                "source_name": donor_name,
+                "document": document,
+                "row": row,
+                "coordinate": coordinate,
+            },
+        )
+
+    # Re-sequence each region's rows into its chosen side's order. A reorder
+    # keeps the same set of coordinates, so it permutes only the row text and
+    # its per-row donor — coordinate-indexed metadata (ranges, groupings, row
+    # heights) stays put, which is why moves need no delete/insert operations.
+    for ordinal in sorted(reposition_order):
+        side = region_side[ordinal]
+        low = int(regions[ordinal]["min_base"])
+        high = int(regions[ordinal]["max_base"])
+        positions = [
+            index
+            for index, entry in enumerate(entries)
+            if isinstance((identity := entry["identity"]), tuple)
+            and identity[0] == "base"
+            and low <= int(identity[1]) <= high
+        ]
+        present = {
+            int(entries[index]["identity"][1])  # type: ignore[index]
+            for index in positions
+        }
+        ordered = [
+            base_index
+            for base_index in reposition_order[ordinal]
+            if base_index in present
+        ]
+        if len(ordered) != len(positions):
+            return None, "The selected row moves could not be sequenced safely"
+        coordinates_slot = [int(entries[index]["coordinate"]) for index in positions]
+        for slot, base_index in enumerate(ordered):
+            side_index = alignments[side].base_to_side.get(base_index)
+            if side_index is not None and layouts[side] is not None:
+                donor_name, document, row = (
+                    side,
+                    documents[side],
+                    layouts[side].rows[side_index],
+                )
+            else:
+                selected_source = selected_row(("base", base_index))
+                if selected_source is None:
+                    return None, f"Unable to materialize selected row {base_index}"
+                donor_name, document, row = selected_source
+            entries[positions[slot]] = {
+                "identity": ("base", base_index),
+                "source_name": donor_name,
+                "document": document,
+                "row": row,
+                "coordinate": coordinates_slot[slot],
+            }
+
+    # Splice each structural region's whole sub-layout into the slot its Base
+    # rows vacated, so its blocks arrive intact with the side's own geometry.
+    # The side's coordinates are kept relative — including gaps between rows,
+    # which 1C renders as the empty spacer lines between sub-tables — so an
+    # empty coordinate reserves its slot with a metadata-only insert.
+    for ordinal in sorted(structural_regions):
+        info = structural_regions[ordinal]
+        side = str(info["side"])
+        low = int(info["low"])
+        document = documents[side]
+        region_rows = list(info["rows"])  # type: ignore[arg-type]
+        first_coordinate = int(region_rows[0].coordinate)
+        width = int(region_rows[-1].coordinate) - first_coordinate + 1
+        rows_by_offset = {
+            int(row.coordinate) - first_coordinate: row for row in region_rows
+        }
+        insert_at = 0
+        start_coordinate = 0
+        for index, entry in enumerate(entries):
+            identity = entry["identity"]
+            if (
+                isinstance(identity, tuple)
+                and identity[0] == "base"
+                and int(identity[1]) < low
+            ):
+                insert_at = index + 1
+                start_coordinate = int(entry["coordinate"]) + 1
+        # Reserve the region's full coordinate span (rows plus gaps) at once.
+        for candidate in entries:
+            if int(candidate["coordinate"]) >= start_coordinate:
+                candidate["coordinate"] = int(candidate["coordinate"]) + width
+        position = insert_at
+        for offset in range(width):
+            coordinate = start_coordinate + offset
+            row = rows_by_offset.get(offset)
+            if row is None:
+                # Empty coordinate (a spacer line): reserve it in the metadata
+                # coordinate space without materializing a row.
+                metadata_operations.append({"kind": "insert", "coordinate": coordinate})
+                continue
+            metadata_operations.append(
+                {
+                    "kind": "insert",
+                    "coordinate": coordinate,
+                    "donor_name": side,
+                    "donor_coordinate": row.coordinate,
+                }
+            )
+            entries.insert(
+                position,
+                {
+                    "identity": ("region", side, int(row.coordinate)),
+                    "source_name": side,
+                    "document": document,
+                    "row": row,
+                    "coordinate": coordinate,
+                },
+            )
+            position += 1
+
+    coordinates = [int(entry["coordinate"]) for entry in entries]
+    if any(right <= left for left, right in zip(coordinates, coordinates[1:])):
+        return None, "The selected row operations produce ambiguous row coordinates"
+
+    first_row = source_layout.rows[0]
+    last_row = source_layout.rows[-1]
+    region_start = source_document.tokens[first_row.start_token].start
+    region_end = source_document.tokens[last_row.end_token - 1].end
+    if len(source_layout.rows) > 1:
+        separator_start = source_document.tokens[source_layout.rows[0].end_token - 1].end
+        separator_end = source_document.tokens[source_layout.rows[1].start_token].start
+        separator = source_document.text[separator_start:separator_end]
+    else:
+        separator = ",\r\n"
+    style_maps: dict[str, dict[int, int]] = {}
+    for side, document in documents.items():
+        layout = layouts[side]
+        assert layout is not None
+        style_maps[side] = _style_index_mapping(
+            base_layout,
+            side,
+            document,
+            layout,
+            order_source,
+            source_document,
+            source_layout,
+            alignments,
+        )
+    for entry in entries:
+        donor_name = str(entry["source_name"])
+        document = entry["document"]
+        row = entry["row"]
+        assert isinstance(document, MxlDocument)
+        assert isinstance(row, RowItem)
+        available_styles = style_maps[donor_name]
+        missing_styles = {
+            int(document.tokens[token_index].value)
+            for token_index in _row_style_token_indexes(document, row)
+            if int(document.tokens[token_index].value) not in available_styles
+            and document is not source_document
+        }
+        if missing_styles:
+            return (
+                None,
+                "The selected row uses style definitions that are unavailable "
+                "in the ordering document",
+            )
+    row_text = separator.join(
+        _row_record_raw(
+            entry["document"],  # type: ignore[arg-type]
+            entry["row"],  # type: ignore[arg-type]
+            int(entry["coordinate"]),
+            style_maps[str(entry["source_name"])],
+        )
+        for entry in entries
+    )
+
+    replacements: list[tuple[int, int, str]] = [(region_start, region_end, row_text)]
+    try:
+        replacements.extend(
+            _row_metadata_replacements(
+                source_document,
+                source_layout,
+                metadata_operations,
+                documents,
+                layouts,
+            )
+        )
+    except ValueError as error:
+        return None, str(error)
+    count_child = source_document.root.children[source_layout.start_child - 1]
+    if not isinstance(count_child, int):
+        return None, "The MXL row count field was not found"
+    count_token = source_document.tokens[count_child]
+    replacements.append((count_token.start, count_token.end, str(len(entries))))
+
+    maximum = (coordinates[-1] + 1) if coordinates else 0
+    max_token: Token | None = None
+    for child in source_document.root.children[
+        source_layout.end_child : source_layout.end_child + 6
+    ]:
+        if isinstance(child, int):
+            candidate = source_document.tokens[child]
+            if candidate.kind == "atom":
+                try:
+                    if int(candidate.value) == source_layout.rows[-1].coordinate + 1:
+                        max_token = candidate
+                        break
+                except ValueError:
+                    pass
+    if max_token is not None:
+        replacements.append((max_token.start, max_token.end, str(maximum)))
+
+    text = source_document.text
+    for start, end, replacement in sorted(replacements, reverse=True):
+        text = text[:start] + replacement + text[end:]
+    data = source_document.prefix + text.encode("utf-8")
+    try:
+        composed = parse_document(data, "<mixed-row-structure>")
+    except MxlFormatError as error:
+        return None, f"Mixed row structure is invalid: {error}"
+    composed_layout = _row_layout(composed)
+    if composed_layout is None or len(composed_layout.rows) != len(entries):
+        return None, "Mixed row structure could not be verified"
+
+    # Hand the value pass a reliable Base-row → composed-row map. Re-aligning the
+    # reordered result by value can pair a deleted Base row with a moved cell and
+    # overwrite it; the composer already knows the exact correspondence. Only
+    # valid when each row is a single semantic entry (record layouts), otherwise
+    # the value pass falls back to its heuristic alignment.
+    source_row_map: dict[int, int] | None = None
+    if len(semantic_entries(base)) == len(base_layout.rows) and len(
+        semantic_entries(composed)
+    ) == len(entries):
+        source_row_map = {
+            int(entry["identity"][1]): position
+            for position, entry in enumerate(entries)
+            if isinstance((row_identity := entry["identity"]), tuple)
+            and row_identity[0] == "base"
+        }
+    return composed, None, source_row_map
+
+
 def _merge_visible_values_into_source(
     base: MxlDocument,
     local: MxlDocument,
     remote: MxlDocument,
     source: MxlDocument,
     resolutions: Mapping[str, Resolution],
+    source_map_override: Mapping[int, int] | None = None,
 ) -> MergeResult:
     base_entries = semantic_entries(base)
     local_entries = semantic_entries(local)
@@ -873,7 +2172,13 @@ def _merge_visible_values_into_source(
     base_values = [value for _, value in base_entries]
     local_map = _align_entry_indexes(base_values, [value for _, value in local_entries])
     remote_map = _align_entry_indexes(base_values, [value for _, value in remote_entries])
-    source_map = _align_entry_indexes(base_values, [value for _, value in source_entries])
+    # A composed row structure supplies an exact Base → source mapping; only a
+    # real source document needs the heuristic value alignment.
+    source_map = (
+        dict(source_map_override)
+        if source_map_override is not None
+        else _align_entry_indexes(base_values, [value for _, value in source_entries])
+    )
     replacements: dict[int, str] = {}
     unresolved: list[dict[str, object]] = []
 
@@ -941,11 +2246,15 @@ def _merge_visible_values_into_source(
             f"{len(unresolved)} MXL conflict(s) have not been resolved",
             tuple(unresolved),
         )
+    structure_reason = (
+        "Composed the selected mixed row structure"
+        if source.path == "<mixed-row-structure>"
+        else f"Selected the {Path(source.path).name or source.path} row structure"
+    )
     return MergeResult(
         True,
         _replace_tokens(source, replacements),
-        f"Selected the {Path(source.path).name or source.path} row structure and merged "
-        f"{len(replacements)} visible value change(s)",
+        f"{structure_reason} and merged {len(replacements)} visible value change(s)",
     )
 
 
@@ -1156,18 +2465,26 @@ def resolve_documents(
                 f"{unresolved} row operation(s) have not been resolved",
                 tuple(row_conflicts),
             )
-        if not source_name:
-            return MergeResult(
-                False,
-                None,
-                "This combination of row decisions does not match a complete Base, "
-                "Local, or Remote structure. Choose one consistent structure so MXL "
-                "ranges and formatting references remain valid.",
-                tuple(row_conflicts),
-            )
         documents = {"base": base, "local": local, "remote": remote}
+        source_row_map: dict[int, int] | None = None
+        if not source_name:
+            # Failures return (None, reason); success adds the Base-row map.
+            composed = _compose_mixed_row_structure(
+                base, local, remote, row_conflicts, resolutions
+            )
+            source, reason = composed[0], composed[1]
+            source_row_map = composed[2] if len(composed) > 2 else None
+            if source is None:
+                return MergeResult(
+                    False,
+                    None,
+                    reason or "The selected row operations cannot be combined safely",
+                    tuple(row_conflicts),
+                )
+        else:
+            source = documents[source_name]
         return _merge_visible_values_into_source(
-            base, local, remote, documents[source_name], resolutions
+            base, local, remote, source, resolutions, source_row_map
         )
 
     if not (
@@ -1445,6 +2762,7 @@ def install_git_config(
     onec_username: str | None = None,
     onec_batch_capable: bool | None = None,
     global_install: bool = False,
+    onec_file_editor: str | None = None,
 ) -> int:
     root: Path | None = None
     if not global_install:
@@ -1512,6 +2830,7 @@ def install_git_config(
         "mxl.onecInfobase": onec_infobase,
         "mxl.onecEpf": onec_epf,
         "mxl.onecUsername": onec_username,
+        "mxl.onecFileEditor": onec_file_editor,
     }
     for key, value in onec_settings.items():
         if value:
@@ -1567,7 +2886,7 @@ def install_git_config(
                 ],
                 check=True,
             )
-        else:
+        elif global_install:
             subprocess.run(
                 [
                     "git",
@@ -1577,6 +2896,15 @@ def install_git_config(
                     "mxl.previewBatchCommand",
                 ],
                 check=False,
+            )
+        else:
+            # Unsetting the local key would let a global mxl.previewBatchCommand
+            # (e.g. from a machine-wide install) show through on "git config
+            # --get" lookups that don't pin the scope. Set it to empty locally
+            # so this repo's disabled batch mode actually masks that fallback.
+            subprocess.run(
+                ["git", "config", config_scope, "mxl.previewBatchCommand", ""],
+                check=True,
             )
 
     if global_install:
@@ -1676,6 +3004,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Trusted command template that converts a {manifest} in one process",
     )
     ui_parser.add_argument(
+        "--file-editor",
+        help="Path to 1cv8fv.exe used for safe source copies and manual result editing",
+    )
+    ui_parser.add_argument(
         "--no-browser", action="store_true", help="Print the URL without opening a browser"
     )
 
@@ -1713,6 +3045,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     install_parser.add_argument("--onec-epf", help="Path to MxlToHtml.epf; bundled by default")
     install_parser.add_argument("--onec-username")
+    install_parser.add_argument(
+        "--onec-file-editor",
+        help="Path to 1C:Enterprise File Work executable (1cv8fv.exe)",
+    )
     install_parser.add_argument(
         "--onec-batch-capable",
         action="store_true",
@@ -1771,6 +3107,7 @@ def main(argv: Iterable[str] | None = None) -> int:
                 open_browser=not args.no_browser,
                 preview_command=args.preview_command,
                 batch_preview_command=args.preview_batch_command,
+                file_editor=args.file_editor,
             )
         if args.command == "render-onec":
             try:
@@ -1841,12 +3178,13 @@ def main(argv: Iterable[str] | None = None) -> int:
             return 0
         if args.command == "install":
             return install_git_config(
-                args.onec_client,
-                args.onec_infobase,
-                args.onec_epf,
-                args.onec_username,
-                args.onec_batch_capable,
-                args.global_install,
+                onec_client=args.onec_client,
+                onec_infobase=args.onec_infobase,
+                onec_epf=args.onec_epf,
+                onec_username=args.onec_username,
+                onec_batch_capable=args.onec_batch_capable,
+                global_install=args.global_install,
+                onec_file_editor=args.onec_file_editor,
             )
     except (OSError, MxlFormatError, subprocess.CalledProcessError) as error:
         print(f"mxl-tool: {error}", file=sys.stderr)

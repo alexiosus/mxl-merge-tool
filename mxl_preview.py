@@ -212,9 +212,12 @@ def align_semantic_values(
 def configured_preview_command(explicit_command: str | None = None) -> str | None:
     if explicit_command:
         return explicit_command
+    # An empty value is a deliberate "no external renderer" — without this an
+    # unrelated repository setting decides, which is how a test run or a CI job
+    # ends up launching the developer's 1C.
     environment_command = os.environ.get("MXL_PREVIEW_COMMAND")
-    if environment_command:
-        return environment_command
+    if environment_command is not None:
+        return environment_command.strip() or None
     try:
         command = subprocess.check_output(
             ["git", "config", "--get", "mxl.previewCommand"],
@@ -232,8 +235,8 @@ def configured_batch_preview_command(
     if explicit_command is not None:
         return explicit_command.strip() or None
     environment_command = os.environ.get("MXL_PREVIEW_BATCH_COMMAND")
-    if environment_command:
-        return environment_command
+    if environment_command is not None:
+        return environment_command.strip() or None
     try:
         command = subprocess.check_output(
             ["git", "config", "--get", "mxl.previewBatchCommand"],
@@ -245,10 +248,30 @@ def configured_batch_preview_command(
     return command or None
 
 
+def split_command(command_template: str) -> list[str]:
+    """Split a configured command template into argv.
+
+    On Windows the backslash is a path separator, not an escape character, so
+    POSIX splitting quietly rewrites quoted paths: "\\\\server\\share\\tool.py"
+    loses one leading backslash and stops being a UNC path, becoming a
+    root-relative one that resolves against whatever the current directory is.
+    Split the Windows way there and strip the quotes ourselves.
+    """
+
+    if os.name != "nt":
+        return shlex.split(command_template)
+    arguments = []
+    for argument in shlex.split(command_template, posix=False):
+        if len(argument) >= 2 and argument[0] == argument[-1] and argument[0] in "\"'":
+            argument = argument[1:-1]
+        arguments.append(argument)
+    return arguments
+
+
 def _render_with_command(
     document: MxlDocument, command_template: str, side: str, output_directory: Path
 ) -> bytes:
-    arguments = shlex.split(command_template)
+    arguments = split_command(command_template)
     if not arguments:
         raise ValueError("MXL preview command is empty")
     if not any("{input}" in argument for argument in arguments):
@@ -299,7 +322,7 @@ def _render_with_batch_command(
     command_template: str,
     output_directory: Path,
 ) -> dict[str, bytes]:
-    arguments = shlex.split(command_template)
+    arguments = split_command(command_template)
     if not arguments or not any("{manifest}" in argument for argument in arguments):
         raise ValueError("MXL batch preview command must contain {manifest}")
     items: list[dict[str, str]] = []

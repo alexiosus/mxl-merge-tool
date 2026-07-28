@@ -1,3 +1,6 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+
+# local dev notes for cross-machine (Windows 1C) hand-off
+.notes/

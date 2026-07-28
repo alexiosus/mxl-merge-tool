@@ -154,22 +154,30 @@
     .zoom-control button:hover { background: var(--accent-soft); }
     .zoom-control .zoom-value { min-width: 54px; color: var(--muted); font-size: 11px; }
     .preview-legend { display: flex; gap: 8px; flex-wrap: wrap; color: var(--muted); font-size: 10px; }
+    .source-head-tools { display: flex; align-items: center; gap: 10px; }
+    .source-open-actions { display: flex; gap: 4px; }
     .legend-item { display: flex; align-items: center; gap: 4px; }
     .legend-dot { width: 9px; height: 9px; border: 2px solid currentColor; border-radius: 3px; }
     .legend-conflict { color: var(--danger); }
+    .legend-base { color: #475569; }
     .legend-local { color: var(--local); }
     .legend-remote { color: var(--remote); }
     .legend-both { color: var(--both); }
+    .legend-edited { color: #94a2b8; }
+    .legend-selected { color: #334155; }
+    .result-legend { flex: 1; justify-content: flex-end; margin-right: 8px; }
     #renderedPreviews, .rendered-grid { min-height: 0; height: 100%; }
     .rendered-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .rendered-pane { display: grid; grid-template-rows: auto minmax(0, 1fr); min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
     .rendered-pane:last-child { border-right: 0; }
     .rendered-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 10px; color: var(--muted); background: #fafbfc; border-bottom: 1px solid var(--line); font-size: 11px; font-weight: 800; text-transform: uppercase; }
     .document-actions { display: flex; align-items: center; gap: 4px; text-transform: none; }
-    .use-document, .resolve-pending { border: 1px solid #c8d2e3; border-radius: 7px; padding: 3px 7px; color: var(--accent); background: #fff; font-size: 10px; font-weight: 800; white-space: nowrap; }
+    .use-document, .resolve-pending, .open-source-copy { border: 1px solid #c8d2e3; border-radius: 7px; padding: 3px 7px; color: var(--accent); background: #fff; font-size: 10px; font-weight: 800; white-space: nowrap; }
     .use-document.selected { color: #fff; border-color: var(--accent); background: var(--accent); }
     .resolve-pending { color: var(--muted); }
-    .use-document:hover, .resolve-pending:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .use-document:hover, .resolve-pending:hover, .open-source-copy:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .open-source-copy { color: #526075; }
+    .open-source-copy:disabled { cursor: not-allowed; opacity: .4; }
     .use-document.selected:hover { color: #fff; background: #244071; }
     .frame-coordinate-shell { display: grid; grid-template-columns: 34px minmax(0, 1fr); grid-template-rows: 20px minmax(0, 1fr); min-width: 0; min-height: 0; overflow: hidden; background: #fff; }
     .frame-coordinate-corner { grid-area: 1 / 1; z-index: 2; border-right: 1px solid #c5ccd8; border-bottom: 1px solid #c5ccd8; background: linear-gradient(135deg, #eef1f5 0 48%, #c5ccd8 49% 51%, #eef1f5 52% 100%); }
@@ -182,6 +190,7 @@
     .frame-coordinate-label.active { color: #174ea6; background: #dbeafe; }
     .frame-coordinate-rows .frame-coordinate-label.placeholder { z-index: 2; color: #9f2434; border-top: 1px solid #bd2939; border-bottom: 1px solid #bd2939; background: repeating-linear-gradient(135deg, #fff0f1, #fff0f1 5px, #ffe3e6 5px, #ffe3e6 10px); font-size: 13px; }
     .frame-coordinate-rows .frame-coordinate-label.placeholder.automatic { color: #087a56; border-color: #0f9f6e; background: #ecfdf5; }
+    .frame-coordinate-rows .frame-coordinate-label.placeholder.restored { color: #1d4ed8; border-color: #2563eb; background: #eff6ff; }
     .frame-coordinate-rows .frame-coordinate-label.placeholder.active { box-shadow: inset 3px 0 #bd2939; }
     .frame-coordinate-shell iframe { grid-area: 2 / 2; display: block; width: 100%; height: 100%; min-height: 0; border: 0; background: #fff; }
     .preview-unavailable { padding: 24px; color: var(--muted); text-align: center; }
@@ -195,7 +204,25 @@
     .result-state-text { min-width: 0; color: var(--muted); font-size: 11px; }
     .exact-button { border: 1px solid #c8d2e3; border-radius: 7px; padding: 5px 9px; color: var(--accent); background: #fff; font-size: 11px; font-weight: 750; }
     .exact-button:disabled { cursor: default; opacity: .45; }
-    .result-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 28%); min-height: 0; }
+    .editor-button { border: 1px solid #c8d2e3; border-radius: 7px; padding: 5px 9px; color: #526075; background: #fff; font-size: 11px; font-weight: 750; white-space: nowrap; }
+    .editor-button.primary-editor { color: #fff; border-color: #334a78; background: #334a78; }
+    .editor-button.danger-editor { color: var(--danger); }
+    .editor-button:disabled { cursor: not-allowed; opacity: .42; }
+    body.external-edit-active .decision-control { cursor: not-allowed !important; opacity: .48; pointer-events: none; }
+    .manual-edit-summary { color: #8a4b08; font-weight: 700; }
+    .result-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(150px, 168px) minmax(240px, 24%); min-height: 0; }
+    .conflict-list { min-height: 0; overflow: auto; border-left: 1px solid var(--line); background: #fbfcfe; padding: 4px; }
+    .conflict-list-empty { padding: 8px; color: var(--muted); font-size: 11px; }
+    .conflict-list-group { padding: 4px 6px 2px; color: var(--muted); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+    .conflict-item { display: grid; grid-template-columns: 10px minmax(0, 1fr); align-items: center; gap: 6px; width: 100%; border: 1px solid transparent; border-radius: 7px; padding: 4px 6px; margin-bottom: 2px; text-align: left; background: transparent; color: var(--ink); }
+    .conflict-item:hover { background: var(--accent-soft); }
+    .conflict-item.active { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+    .conflict-item-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+    .conflict-item.resolved .conflict-item-dot { background: var(--good); }
+    .conflict-item.automatic .conflict-item-dot { background: #cbd3df; box-shadow: inset 0 0 0 1.5px var(--good); }
+    .conflict-item-body { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+    .conflict-item-coordinate { overflow: hidden; color: var(--ink); font: 700 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .conflict-item-label { overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
     .result-frame-wrap { position: relative; min-height: 0; background: #fff; }
     .result-frame-wrap > .frame-coordinate-shell { width: 100%; height: 100%; }
     .result-overlay { position: absolute; inset: 0; display: none; place-items: center; padding: 30px; color: #8a5a16; background: rgba(255, 248, 235, .86); text-align: center; font-weight: 750; pointer-events: none; }
@@ -257,6 +284,7 @@
       .choice, .rendered-pane { border-right: 0; border-bottom: 1px solid var(--line); }
       .rendered-pane .frame-coordinate-shell, .result-frame-wrap > .frame-coordinate-shell { height: 42vh; min-height: 240px; }
       .result-body { grid-template-columns: 1fr; }
+      .conflict-list { max-height: 160px; border-top: 1px solid var(--line); border-left: 0; }
       .source-picker { min-height: auto; max-height: none; border-top: 1px solid var(--line); border-left: 0; }
     }
   </style>
@@ -301,11 +329,17 @@
       <div class="document-preview">
         <div class="document-preview-head">
           <div><h2>Sources</h2><p>Base, Local, and Remote</p></div>
-          <div class="preview-legend">
-            <span class="legend-item legend-conflict"><i class="legend-dot"></i>Conflict</span>
-            <span class="legend-item legend-local"><i class="legend-dot"></i>Local</span>
-            <span class="legend-item legend-remote"><i class="legend-dot"></i>Remote</span>
-            <span class="legend-item legend-both"><i class="legend-dot"></i>Both</span>
+          <div class="source-head-tools">
+            <div class="source-open-actions">
+              <button type="button" class="open-source-copy" data-open-source="base">Open Base copy</button>
+              <button type="button" class="open-source-copy" data-open-source="local">Open Local copy</button>
+              <button type="button" class="open-source-copy" data-open-source="remote">Open Remote copy</button>
+            </div>
+            <div class="preview-legend">
+              <span class="legend-item legend-conflict"><i class="legend-dot"></i>Conflict</span>
+              <span class="legend-item legend-edited"><i class="legend-dot"></i>Differs</span>
+              <span class="legend-item legend-selected"><i class="legend-dot"></i><b>Chosen</b></span>
+            </div>
           </div>
         </div>
         <div id="renderedPreviews"></div>
@@ -314,8 +348,18 @@
       <div class="result-preview">
         <div class="result-preview-head">
           <div><h2>Merged result</h2><p>Click an unresolved field and choose Base, Local, Remote, or Manual.</p></div>
+          <div class="preview-legend result-legend">
+            <span class="legend-item legend-conflict"><i class="legend-dot"></i>Unresolved</span>
+            <span class="legend-item legend-base"><i class="legend-dot"></i>Base</span>
+            <span class="legend-item legend-local"><i class="legend-dot"></i>Local</span>
+            <span class="legend-item legend-remote"><i class="legend-dot"></i>Remote</span>
+            <span class="legend-item legend-both"><i class="legend-dot"></i>Both</span>
+          </div>
           <div class="result-head-actions">
             <span class="result-state-text" id="resultStatus" aria-live="polite"></span>
+            <button type="button" class="editor-button primary-editor" id="editIn1CButton">Edit in 1C</button>
+            <button type="button" class="editor-button" id="reloadEditedButton" hidden>Reload from 1C</button>
+            <button type="button" class="editor-button danger-editor" id="discardEditedButton" hidden>Discard manual edits</button>
             <button type="button" class="exact-button" id="refreshExactButton">Render exact</button>
           </div>
         </div>
@@ -329,6 +373,7 @@
             </div>
             <div class="result-overlay" id="resultOverlay"></div>
           </div>
+          <div class="conflict-list" id="conflictList" aria-label="Conflict list"></div>
           <div class="source-picker" id="sourcePicker"><div class="source-picker-empty">Click a highlighted field or use ‹ › to navigate conflicts.</div></div>
         </div>
       </div>
@@ -366,9 +411,31 @@
     const sourceElements = {base: new Map(), local: new Map(), remote: new Map()};
     const resultElements = new Map();
     const requiresManualChoice = conflict => conflict.requires_choice !== false;
-    const conflictKeys = model.conflicts
-      .filter(requiresManualChoice)
-      .map(conflict => conflict.key);
+    // Navigation and the conflict list treat one move region as a single unit:
+    // its rows — reorders plus any additions and deletions inside the block —
+    // are decided together, so stepping through them one by one would be noise.
+    // The first member's key represents the whole group.
+    const moveGroupRepresentative = {};
+    model.conflicts.forEach(conflict => {
+      if (conflict.move_group &&
+          moveGroupRepresentative[conflict.move_group] === undefined) {
+        moveGroupRepresentative[conflict.move_group] = conflict.key;
+      }
+    });
+    const navigationUnitKey = conflict =>
+      conflict.move_group
+        ? moveGroupRepresentative[conflict.move_group]
+        : conflict.key;
+    const conflictKeys = [];
+    model.conflicts.filter(requiresManualChoice).forEach(conflict => {
+      const unitKey = navigationUnitKey(conflict);
+      if (!conflictKeys.includes(unitKey)) conflictKeys.push(unitKey);
+    });
+    const navigationIndexForKey = key => {
+      const conflict = conflictByKey[key];
+      const unitKey = conflict ? navigationUnitKey(conflict) : key;
+      return conflictKeys.indexOf(unitKey);
+    };
     let exactPreviewAvailable = Boolean(model.previews.rendered.provider && model.previews.rendered.available.length === 3);
     let previewPollScheduled = false;
     let viewMode = "changes";
@@ -386,6 +453,15 @@
     const redoStack = [];
     const historyLimit = 100;
     let activeHistoryGroup = null;
+    let externalEditActive = Boolean(model.fileEditor?.active);
+    let externalEditorRunning = false;
+    let externalEditRevision = 0;
+    let externalPreviewRevision = 0;
+    let manualChanges = [];
+    let manualChangeCounts = {edit: 0, add: 0, delete: 0};
+    let manualUnmapped = false;
+    let manualEditsPresent = false;
+    let editorPollTimer = null;
 
     const escapeText = value => value === undefined || value === null ? "" : String(value);
     const conflictsNode = document.getElementById("conflicts");
@@ -393,12 +469,56 @@
     const cancelButton = document.getElementById("cancelButton");
     const undoButton = document.getElementById("undoButton");
     const redoButton = document.getElementById("redoButton");
+    const editIn1CButton = document.getElementById("editIn1CButton");
+    const reloadEditedButton = document.getElementById("reloadEditedButton");
+    const discardEditedButton = document.getElementById("discardEditedButton");
     const toast = document.getElementById("toast");
 
     function showToast(message, error = false) {
       toast.textContent = message;
       toast.className = `toast visible${error ? " error" : ""}`;
       setTimeout(() => toast.className = "toast", 3200);
+    }
+
+    function decisionsLocked() {
+      return sessionEnded || externalEditActive;
+    }
+
+    function manualEditSummary() {
+      const parts = [];
+      if (manualChangeCounts.edit) parts.push(`${manualChangeCounts.edit} edited`);
+      if (manualChangeCounts.add) parts.push(`${manualChangeCounts.add} added`);
+      if (manualChangeCounts.delete) parts.push(`${manualChangeCounts.delete} deleted`);
+      if (manualUnmapped) parts.push("formatting/metadata changed");
+      return parts.length ? `Manual edits: ${parts.join(", ")}` : "No manual changes detected";
+    }
+
+    function updateExternalEditControls() {
+      document.body.classList.toggle("external-edit-active", externalEditActive);
+      editIn1CButton.hidden = externalEditorRunning;
+      editIn1CButton.textContent = externalEditActive
+        ? "Edit again in 1C"
+        : "Edit in 1C";
+      editIn1CButton.disabled =
+        sessionEnded ||
+        externalEditorRunning ||
+        !model.fileEditor?.available ||
+        !allConflictsResolved();
+      editIn1CButton.title = !model.fileEditor?.available
+        ? "Configure 1cv8fv.exe with mxl-tool install --onec-file-editor"
+        : externalEditActive
+          ? "Reopen the same editable copy; changes remain compared with the original merged result"
+          : "Create an editable merged copy and open it in 1C";
+      reloadEditedButton.hidden = !externalEditActive;
+      discardEditedButton.hidden = !externalEditActive || !manualEditsPresent;
+      reloadEditedButton.disabled = sessionEnded;
+      discardEditedButton.disabled = sessionEnded;
+      const locked = externalEditActive || sessionEnded;
+      document.querySelectorAll(
+        ".choice, .source-picker-choice, .use-document, .resolve-pending, " +
+        "[data-all], textarea[data-manual-key]"
+      ).forEach(control => control.disabled = locked);
+      updateHistoryControls();
     }
 
     function captureDecisionState() {
@@ -413,8 +533,8 @@
     }
 
     function updateHistoryControls() {
-      undoButton.disabled = sessionEnded || undoStack.length === 0;
-      redoButton.disabled = sessionEnded || redoStack.length === 0;
+      undoButton.disabled = decisionsLocked() || undoStack.length === 0;
+      redoButton.disabled = decisionsLocked() || redoStack.length === 0;
       undoButton.title = undoStack.length
         ? `Undo: ${undoStack[undoStack.length - 1].label} (Ctrl/Cmd+Z)`
         : "Nothing to undo (Ctrl/Cmd+Z)";
@@ -460,7 +580,7 @@
     }
 
     function undoDecision() {
-      if (sessionEnded || !undoStack.length) return;
+      if (decisionsLocked() || !undoStack.length) return;
       if (document.activeElement instanceof HTMLTextAreaElement) {
         document.activeElement.blur();
       }
@@ -476,7 +596,7 @@
     }
 
     function redoDecision() {
-      if (sessionEnded || !redoStack.length) return;
+      if (decisionsLocked() || !redoStack.length) return;
       if (document.activeElement instanceof HTMLTextAreaElement) {
         document.activeElement.blur();
       }
@@ -505,17 +625,20 @@
       const selected = selectedCount();
       const rowSource = selectedRowStructureSource();
       const complete = Boolean(wholeDocumentChoice()) ||
-        ((total === 0 || selected === total) && rowSource !== "");
-      saveButton.disabled = sessionEnded || !complete;
+        ((total === 0 || selected === total) && rowSource !== undefined);
+      saveButton.disabled = sessionEnded || !complete || externalEditorRunning;
       const exactButton = document.getElementById("refreshExactButton");
-      exactButton.disabled = sessionEnded || !complete || !exactPreviewAvailable;
+      exactButton.disabled =
+        sessionEnded || externalEditActive || !complete || !exactPreviewAvailable;
+      updateExternalEditControls();
+      renderConflictList();
     }
 
     function allConflictsResolved() {
       return Boolean(wholeDocumentChoice()) ||
         (
           model.conflicts.every(conflict => resolutions[conflict.key]) &&
-          selectedRowStructureSource() !== ""
+          selectedRowStructureSource() !== undefined
         );
     }
 
@@ -531,9 +654,23 @@
       })) || "";
     }
 
+    function selectedMoveStructureSource() {
+      const moveConflicts = model.conflicts.filter(conflict =>
+        conflict.kind === "row" && conflict.operation === "move"
+      );
+      if (!moveConflicts.length) return null;
+      if (moveConflicts.some(conflict => !resolutions[conflict.key])) return undefined;
+      return ["local", "remote", "base"].find(candidate => moveConflicts.every(conflict => {
+        const choice = resolutions[conflict.key]?.choice;
+        return conflict.states?.[candidate] === conflict.states?.[choice];
+      })) || "";
+    }
+
     function draftRowStructureSource() {
       const selected = selectedRowStructureSource();
       if (selected && selected !== "") return selected;
+      const selectedMoveSource = selectedMoveStructureSource();
+      if (selected === "" && selectedMoveSource) return selectedMoveSource;
       if (
         selected === "" &&
         ["base", "local", "remote"].includes(draftRowStructurePreference)
@@ -624,6 +761,43 @@
         if (element) anchors.push({element, ...coordinate});
       });
       return anchors;
+    }
+
+    // An empty spacer row has no text, so it never gets a coordinate anchor and
+    // axisSegments has to guess its position by spreading the gap between two
+    // anchored rows evenly. A 1C spacer is a couple of pixels tall next to
+    // ~20px data rows, so that guess visibly slides the ruler wherever spacers
+    // cluster. The rendered rows are right there in document order: when the
+    // ones between two anchors line up one-for-one with the missing
+    // coordinates, use their real geometry and leave nothing to interpolation.
+    function fillUnanchoredRowGeometry(doc, rowGroups) {
+      if (rowGroups.size < 2) return;
+      const rendered = [...doc.querySelectorAll("tr")]
+        .filter(node =>
+          !node.classList.contains("mxl-row-placeholder") &&
+          !node.classList.contains("mxl-row-placeholder-block") &&
+          !node.classList.contains("mxl-row-provisional-hidden"))
+        .map(node => ({rect: node.getBoundingClientRect()}))
+        .filter(item => item.rect.height > 0);
+      if (!rendered.length) return;
+      const anchoredPositions = new Map();
+      rowGroups.forEach((bounds, row) => {
+        const top = median(bounds.map(bound => bound.start));
+        const index = rendered.findIndex(item => Math.abs(item.rect.top - top) < 1);
+        if (index >= 0) anchoredPositions.set(row, index);
+      });
+      const known = [...anchoredPositions.entries()].sort((left, right) => left[0] - right[0]);
+      for (let position = 0; position < known.length - 1; position += 1) {
+        const [row, index] = known[position];
+        const [nextRow, nextIndex] = known[position + 1];
+        const missing = nextRow - row - 1;
+        // Only when the count matches exactly is the correspondence unambiguous.
+        if (missing <= 0 || nextIndex - index - 1 !== missing) continue;
+        for (let offset = 1; offset <= missing; offset += 1) {
+          const rect = rendered[index + offset].rect;
+          rowGroups.set(row + offset, [{start: rect.top, end: rect.bottom}]);
+        }
+      }
     }
 
     function axisSegments(groups, minimumIndex = null) {
@@ -754,6 +928,7 @@
         columnFragment.append(label);
       });
       const rowFragment = document.createDocumentFragment();
+      fillUnanchoredRowGeometry(doc, rowGroups);
       axisSegments(rowGroups).forEach(segment => {
         let start = segment.start;
         let end = segment.start + segment.size;
@@ -777,11 +952,23 @@
           "frame-coordinate-label",
           "placeholder",
           band.automatic ? "automatic" : "",
+          band.state === "restored" ? "restored" : "",
           band.active ? "active" : ""
         ].filter(Boolean).join(" ");
-        label.textContent = band.state === "unresolved" ? "?" : "×";
+        // A restored row is a real row of the result: show its source-side
+        // number rather than a "+", even though the surrounding provisional
+        // numbering only settles once the structure is composed.
+        label.textContent = band.state === "unresolved"
+          ? "?"
+          : band.state === "restored"
+            ? (band.row != null ? String(band.row) : "+")
+            : "×";
+        const bandDescription = {
+          unresolved: "unresolved row",
+          restored: "row kept from its side · exact numbering after render",
+        }[band.state] || "row absent on this side";
         label.title = band.row
-          ? `R${band.row} · ${band.state === "unresolved" ? "unresolved row" : "row absent on this side"}`
+          ? `R${band.row} · ${bandDescription}`
           : "Structural row placeholder";
         label.style.top = `${band.start}px`;
         label.style.height = `${band.end - band.start}px`;
@@ -853,7 +1040,15 @@
         .mxl-change[data-mxl-chip-choice="local"]::before { background: #2563eb !important; }
         .mxl-change[data-mxl-chip-choice="remote"]::before { background: #0f9f6e !important; }
         .mxl-change[data-mxl-chip-choice="manual"]::before { background: #7c3aed !important; }
+        .mxl-change[data-mxl-chip-choice="edited"]::before { background: #b45309 !important; }
+        .mxl-manual-edit { --mxl-color: #b45309 !important; outline: 3px solid #f59e0b !important; outline-offset: -3px !important; background-color: #fff7ed !important; }
+        tr.mxl-manual-row-edit { outline: 3px solid #f59e0b !important; outline-offset: -3px !important; }
         html[data-mxl-mode="conflicts"] .mxl-change:not(.mxl-conflict) { z-index: auto !important; outline-color: transparent !important; }
+        .mxl-state-base { --mxl-color: #475569; }
+        .mxl-state-manual { --mxl-color: #7c3aed; }
+        /* Source panels drop side colour: every differing field is the same
+           neutral grey, and the chosen side is set apart by weight, not hue. */
+        .mxl-state-neutral { --mxl-color: #94a2b8; }
         .mxl-state-local { --mxl-color: #2563eb; }
         .mxl-state-remote { --mxl-color: #0f9f6e; }
         .mxl-state-both { --mxl-color: #7c3aed; }
@@ -864,19 +1059,40 @@
         tr.mxl-row-conflict-line > td, tr.mxl-row-conflict-line > th { background: #fff0f1 !important; }
         .mxl-row-change { outline: none !important; }
         tr.mxl-row-change-line { outline: 2px solid var(--mxl-color, #d97706) !important; outline-offset: -2px !important; }
+        /* A decided reordered block is taken as a whole, so every cell in it is
+           part of the accepted change. Without this the block's cells match the
+           dim rules below (mxl-content with no mxl-change of their own) and the
+           chosen region greys out exactly like untouched content. The exemption
+           repeats those rules' selectors so it outweighs them on specificity. */
+        tr.mxl-row-region-line { position: relative !important; z-index: 2147483001 !important; }
+        html[data-mxl-dim="on"][data-mxl-mode="changes"] tr.mxl-row-region-line.mxl-row-change-line > td,
+        html[data-mxl-dim="on"][data-mxl-mode="changes"] tr.mxl-row-region-line.mxl-row-change-line > th,
+        html[data-mxl-dim="on"][data-mxl-mode="conflicts"] tr.mxl-row-region-line.mxl-row-change-line > td,
+        html[data-mxl-dim="on"][data-mxl-mode="conflicts"] tr.mxl-row-region-line.mxl-row-change-line > th,
+        tr.mxl-row-region-line > td, tr.mxl-row-region-line > th { opacity: 1 !important; filter: none !important; background-color: #fff !important; }
         .mxl-clickable { cursor: pointer !important; }
         .mxl-clickable:hover { box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--mxl-color), white 35%) !important; }
         .mxl-selected-source { box-shadow: inset 0 0 0 3px var(--mxl-color) !important; }
+        /* Source panels mark the chosen side by weight, not colour: bold text
+           and a darker neutral frame so the pick stands out among grey diffs. */
+        html[data-mxl-panel="source"] .mxl-selected-source { font-weight: 700 !important; --mxl-color: #475569 !important; }
         .mxl-active-conflict { z-index: 2147483002 !important; outline: 4px solid #facc15 !important; outline-offset: -4px !important; box-shadow: 0 0 0 3px #111827, 0 0 0 7px rgba(250, 204, 21, .55), inset 0 0 0 2px #111827 !important; filter: none !important; opacity: 1 !important; }
         .mxl-unresolved { min-width: 88px !important; min-height: 24px !important; cursor: pointer !important; background: repeating-linear-gradient(135deg, #fff1f2, #fff1f2 7px, #ffe3e6 7px, #ffe3e6 14px) !important; }
         .mxl-unresolved::after { content: attr(data-mxl-placeholder); display: inline-block; padding: 3px 6px; color: #9f2434; font: 11px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; white-space: nowrap; }
         .mxl-row-provisional-hidden { display: none !important; }
         .mxl-row-placeholder { position: relative !important; z-index: 2147483001 !important; cursor: pointer !important; }
-        .mxl-row-placeholder > td, .mxl-row-placeholder-block { height: 32px !important; border: 2px dashed #bd2939 !important; padding: 6px 10px !important; color: #8f1f30 !important; background: repeating-linear-gradient(135deg, #fff0f1, #fff0f1 8px, #ffe3e6 8px, #ffe3e6 16px) !important; font: 700 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important; text-align: left !important; }
-        .mxl-row-change-placeholder > td, .mxl-row-change-placeholder.mxl-row-placeholder-block { border-color: var(--mxl-color, #0f9f6e) !important; color: #087a56 !important; background: #ecfdf5 !important; }
-        .mxl-row-placeholder:hover > td, .mxl-row-placeholder-block:hover { box-shadow: inset 0 0 0 2px #bd2939 !important; }
+        .mxl-row-placeholder:not(.mxl-row-restored) > td, .mxl-row-placeholder-block { height: 32px !important; border: 2px dashed #bd2939 !important; padding: 6px 10px !important; color: #8f1f30 !important; background: repeating-linear-gradient(135deg, #fff0f1, #fff0f1 8px, #ffe3e6 8px, #ffe3e6 16px) !important; font: 700 12px/1.35 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important; text-align: left !important; }
+        .mxl-row-change-placeholder:not(.mxl-row-restored) > td, .mxl-row-change-placeholder.mxl-row-placeholder-block { border-color: var(--mxl-color, #0f9f6e) !important; color: #087a56 !important; background: #ecfdf5 !important; }
+        .mxl-row-placeholder:not(.mxl-row-restored):hover > td, .mxl-row-placeholder-block:hover { box-shadow: inset 0 0 0 2px #bd2939 !important; }
+        /* A row the layout skeleton does not contain, re-inserted from the side
+           that keeps it, so the draft matches what saving would compose. */
+        .mxl-row-restored > td { border-top: 2px dashed var(--mxl-color, #1d4ed8) !important; border-bottom: 2px dashed var(--mxl-color, #1d4ed8) !important; background: color-mix(in srgb, var(--mxl-color, #1d4ed8) 7%, white) !important; }
+        .mxl-row-restored > td:first-child { border-left: 2px dashed var(--mxl-color, #1d4ed8) !important; }
+        .mxl-row-restored > td:last-child { border-right: 2px dashed var(--mxl-color, #1d4ed8) !important; }
+        .mxl-row-restored:hover > td { background: color-mix(in srgb, var(--mxl-color, #1d4ed8) 14%, white) !important; }
+        .mxl-row-restored.mxl-active-conflict > td:first-child { box-shadow: inset 3px 0 var(--mxl-color, #1d4ed8) !important; }
         .mxl-row-placeholder.mxl-active-conflict, .mxl-row-placeholder-block.mxl-active-conflict { outline: none !important; box-shadow: none !important; }
-        .mxl-row-placeholder.mxl-active-conflict > td, .mxl-row-placeholder-block.mxl-active-conflict { box-shadow: inset 3px 0 #bd2939 !important; }
+        .mxl-row-placeholder:not(.mxl-row-restored).mxl-active-conflict > td, .mxl-row-placeholder-block.mxl-active-conflict { box-shadow: inset 3px 0 #bd2939 !important; }
       `;
       (doc.head || doc.documentElement).append(style);
     }
@@ -964,10 +1180,18 @@
         element.dataset.mxlChipChoice = choice;
         return;
       }
+      // Chips mark a decision, so a cell without one carries none: coordinates
+      // are already on the rulers and in the picker header.
       delete element.dataset.mxlChipChoice;
-      const coordinate = element.dataset.mxlCoordinate || "";
-      if (coordinate) element.dataset.mxlChip = coordinate;
-      else delete element.dataset.mxlChip;
+      delete element.dataset.mxlChip;
+    }
+
+    function setManualEditChip(element, sourceChoice = null) {
+      if (!element) return;
+      element.dataset.mxlChip = sourceChoice
+        ? `${sourceChoice.toUpperCase()} → EDITED`
+        : "EDITED";
+      element.dataset.mxlChipChoice = "edited";
     }
 
     function resolutionForRow(row) {
@@ -982,7 +1206,15 @@
       return decisionKey ? resolutions[decisionKey] || null : null;
     }
 
-    function markElement(element, row, coordinateSide) {
+    // Which side a merged value comes from, so the result is coloured by
+    // provenance rather than by which side happened to differ from Base.
+    function valueSourceState(row) {
+      const choice = resolutionForRow(row)?.choice;
+      if (["base", "local", "remote", "manual"].includes(choice)) return choice;
+      return row.state;
+    }
+
+    function markElement(element, row, coordinateSide, panel = "result") {
       const rowDecision = row.row_conflict_key
         ? conflictByKey[row.row_conflict_key]
         : null;
@@ -991,9 +1223,24 @@
         : null;
       const automaticDecision = decision?.requires_choice === false;
       const automaticRowChange = rowDecision?.requires_choice === false;
-      const visualState = automaticRowChange
-        ? rowChangeVisualState(rowDecision)
-        : row.state;
+      // An answered row is no longer a question in the merged result: it carries
+      // the decided side's colour instead of the unresolved-row red.
+      // importRestoredRow converts the rows it borrows for the same reason, but
+      // the exact render never passes through it, so resolved rows would stay
+      // red there until saved. The source panels keep flagging them, since that
+      // is how the user locates a conflict's two sides.
+      const rowAnswered = panel !== "source" &&
+        (Boolean(wholeDocumentChoice()) ||
+          (row.row_conflict_key ? Boolean(resolutions[row.row_conflict_key]) : false));
+      const settledRow = automaticRowChange || rowAnswered;
+      const conflicting = Boolean(row.conflict_key) && !automaticDecision;
+      // A source panel is already labelled with its side, so colour there is
+      // spent on conflicts alone; the merged result keeps the side palette.
+      const visualState = panel === "source"
+        ? (conflicting ? "conflict" : "neutral")
+        : automaticRowChange
+          ? rowChangeVisualState(rowDecision)
+          : valueSourceState(row);
       element.classList.add("mxl-content", "mxl-change", `mxl-state-${visualState}`);
       if (row.conflict_key && !automaticDecision) {
         element.classList.add("mxl-conflict", "mxl-clickable");
@@ -1001,11 +1248,11 @@
         element.classList.add("mxl-clickable");
       }
       if (row.row_conflict_key) {
-        element.classList.add(automaticRowChange ? "mxl-row-change" : "mxl-row-conflict");
+        element.classList.add(settledRow ? "mxl-row-change" : "mxl-row-conflict");
         const tableRow = element.closest("tr");
         if (tableRow) {
           tableRow.classList.add(
-            automaticRowChange ? "mxl-row-change-line" : "mxl-row-conflict-line",
+            settledRow ? "mxl-row-change-line" : "mxl-row-conflict-line",
             `mxl-state-${visualState}`,
             "mxl-clickable"
           );
@@ -1017,6 +1264,13 @@
       if (coordinate) element.dataset.mxlCoordinate = coordinate;
       else delete element.dataset.mxlCoordinate;
       setElementChip(element);
+    }
+
+    function setVisualState(element, state) {
+      Array.from(element.classList)
+        .filter(name => name.startsWith("mxl-state-"))
+        .forEach(name => element.classList.remove(name));
+      element.classList.add(`mxl-state-${state}`);
     }
 
     function conflictVisualElement(element) {
@@ -1068,8 +1322,78 @@
       return {element: null, after: false};
     }
 
-    function renderRowConflictPlaceholders(doc, displaySide, lookupSide, elements) {
-      doc.querySelectorAll(".mxl-row-placeholder, .mxl-row-placeholder-block").forEach(node => node.remove());
+    // Markers are rebuilt from scratch on every pass, so any result field they
+    // own has to be unregistered before the nodes disappear.
+    function clearRowConflictMarkers(doc) {
+      if (!doc?.querySelectorAll) return;
+      doc.querySelectorAll(".mxl-row-placeholder, .mxl-row-placeholder-block").forEach(node => {
+        node.querySelectorAll?.("[data-mxl-field]").forEach(field => {
+          const fieldId = field.dataset.mxlField;
+          if (resultElements.get(fieldId) === field) resultElements.delete(fieldId);
+        });
+        node.remove();
+      });
+    }
+
+    // The draft result borrows the rendered skeleton of a single side, so a row
+    // that side dropped has no markup to decorate. Import the row as it was
+    // rendered for the side that keeps it, which is what saving would compose.
+    function importRestoredRow(doc, conflict, choice) {
+      const donor = (conflict.field_ids || [])
+        .map(fieldId => sourceElements[choice]?.get(fieldId)?.closest("tr"))
+        .find(Boolean);
+      if (!donor) return null;
+      const imported = doc.importNode(donor, true);
+      imported.classList.remove(
+        "mxl-active-conflict",
+        "mxl-selected-source",
+        "mxl-row-provisional-hidden"
+      );
+      // The donor was decorated for a source panel; the result panel colours by
+      // provenance instead, so the neutral source marks have to go.
+      imported.querySelectorAll("*").forEach(node =>
+        node.classList.remove("mxl-active-conflict", "mxl-selected-source", "mxl-unresolved")
+      );
+      imported.querySelectorAll("[data-mxl-field]").forEach(element => {
+        const row = semanticRows.find(item => item.id === element.dataset.mxlField);
+        if (!row) return;
+        markElement(element, row, choice);
+        // markElement colours a field by how it differs from Base. Every cell
+        // here comes from the side that keeps the row, so a field the chosen
+        // side left untouched would otherwise read as the deleting side's.
+        setVisualState(element, choice);
+        setElementChip(element, resolutionForRow(row)?.choice || null);
+        resultElements.set(row.id, element);
+        element.addEventListener("click", event => {
+          event.preventDefault();
+          event.stopPropagation();
+          showFieldPicker(
+            row.conflict_key || "",
+            Boolean(row.conflict_key),
+            row.conflict_key ? row.id : null
+          );
+        });
+      });
+      // The row question is already answered here, so it carries the decided
+      // side's colour instead of the unresolved-row red.
+      imported.classList.remove("mxl-row-conflict-line");
+      imported.classList.add("mxl-row-change-line");
+      setVisualState(imported, choice);
+      imported.querySelectorAll(".mxl-row-conflict").forEach(node => {
+        node.classList.remove("mxl-row-conflict");
+        node.classList.add("mxl-row-change");
+      });
+      return imported;
+    }
+
+    function renderRowConflictPlaceholders(
+      doc,
+      displaySide,
+      lookupSide,
+      elements,
+      provisionalLayout = false
+    ) {
+      clearRowConflictMarkers(doc);
       doc.querySelectorAll(".mxl-row-provisional-hidden").forEach(node =>
         node.classList.remove("mxl-row-provisional-hidden")
       );
@@ -1077,26 +1401,47 @@
       if (!conflicts.length || !doc.body) return;
       if (displaySide === "result" && wholeDocumentChoice()) return;
       conflicts.forEach(conflict => {
+        // The provisional draft leaves structural regions as borrowed 1C
+        // content, so it must not scatter per-row placeholders/imports there.
+        if (
+          provisionalLayout &&
+          displaySide === "result" &&
+          conflict.move_group &&
+          structuralMoveGroups.has(conflict.move_group)
+        ) {
+          return;
+        }
         const choice = displaySide === "result"
           ? resolutions[conflict.key]?.choice
           : displaySide;
         const state = choice ? conflict.states?.[choice] : null;
         const unresolvedResult = displaySide === "result" && !choice;
-        if (!unresolvedResult && state !== "absent") return;
+        // Kept by the resolution, but missing from the provisional skeleton.
+        const restored = provisionalLayout &&
+          !unresolvedResult &&
+          state !== "absent" &&
+          Boolean(choice) &&
+          choice !== "manual" &&
+          conflict.states?.[lookupSide] === "absent";
+        if (!unresolvedResult && !restored && state !== "absent") return;
         const automaticRowChange = conflict.requires_choice === false;
-        const visualState = rowChangeVisualState(conflict);
+        const visualState = restored ? choice : rowChangeVisualState(conflict);
         const boundary = findConflictBoundaryElement(elements, conflict, lookupSide);
-        const representedRow = unresolvedResult
+        // A row the layout still carries but the resolution drops must go, or
+        // the draft shows an empty ghost line next to the deletion marker.
+        const representedRow = unresolvedResult || (displaySide === "result" && state === "absent")
           ? (conflict.field_ids || [])
               .map(fieldId => resultElements.get(fieldId)?.closest("tr"))
               .find(Boolean)
           : null;
-        const tableRow = representedRow || boundary.element?.closest("tr");
+        const tableRow = (restored ? null : representedRow) || boundary.element?.closest("tr");
         const message = unresolvedResult
           ? `Row ${conflict.row_number ?? ""} unresolved — choose Base, Local, or Remote`
-          : automaticRowChange
-            ? `Row ${conflict.row_number ?? ""} absent — automatic ${conflict.default_choice} row change`
-            : `Row ${conflict.row_number ?? ""} deleted — choose Base, Local, or Remote`;
+          : restored
+            ? `Row ${conflict.row_number ?? ""} kept from ${choice[0].toUpperCase()}${choice.slice(1)}`
+            : automaticRowChange
+              ? `Row ${conflict.row_number ?? ""} absent — automatic ${conflict.default_choice} row change`
+              : `Row ${conflict.row_number ?? ""} deleted — choose Base, Local, or Remote`;
         const rowCoordinate = rowPositionCoordinate(
           conflict,
           choice && choice !== "manual" ? choice : lookupSide
@@ -1105,9 +1450,23 @@
           ? `${rowCoordinate} · ${message}`
           : message;
         let marker;
-        if (tableRow?.parentNode) {
+        const restoredRow = restored && tableRow?.parentNode
+          ? importRestoredRow(doc, conflict, choice)
+          : null;
+        if (restoredRow) {
+          marker = restoredRow;
+          marker.classList.add(
+            "mxl-row-placeholder",
+            "mxl-row-restored",
+            "mxl-change",
+            `mxl-state-${visualState}`
+          );
+          marker.title = coordinateMessage;
+          if (boundary.after) tableRow.after(marker);
+          else tableRow.before(marker);
+        } else if (tableRow?.parentNode) {
           marker = doc.createElement("tr");
-          marker.className = automaticRowChange
+          marker.className = automaticRowChange || restored
             ? `mxl-row-placeholder mxl-row-change-placeholder mxl-change mxl-state-${visualState}`
             : "mxl-row-placeholder mxl-conflict";
           const cell = doc.createElement("td");
@@ -1130,7 +1489,7 @@
         } else {
           if (!boundary.element) return;
           marker = doc.createElement("div");
-          marker.className = automaticRowChange
+          marker.className = automaticRowChange || restored
             ? `mxl-row-placeholder-block mxl-row-change-placeholder mxl-change mxl-state-${visualState}`
             : "mxl-row-placeholder-block mxl-conflict";
           marker.textContent = coordinateMessage;
@@ -1139,7 +1498,9 @@
         }
         marker.dataset.mxlConflictKey = conflict.key;
         marker.dataset.mxlRowCoordinate = rowCoordinate;
-        marker.dataset.mxlRowPlaceholderState = unresolvedResult ? "unresolved" : "absent";
+        marker.dataset.mxlRowPlaceholderState = unresolvedResult
+          ? "unresolved"
+          : restored ? "restored" : "absent";
         marker.dataset.mxlRowPlaceholderAutomatic = String(automaticRowChange);
         marker.addEventListener("click", event => {
           event.preventDefault();
@@ -1196,7 +1557,9 @@
           const resolution = resolutionForRow(row);
           const selected = resolution?.choice === side;
           element.classList.toggle("mxl-selected-source", selected);
-          setElementChip(element, selected ? resolution.choice : null);
+          // A source panel already states its side; the selection shows as the
+          // inset border, so chips are reserved for the merged result.
+          setElementChip(element, null);
         });
       });
     }
@@ -1248,7 +1611,7 @@
     }
 
     function chooseWholeDocument(side) {
-      if (sessionEnded || !["base", "local", "remote"].includes(side)) return;
+      if (decisionsLocked() || !["base", "local", "remote"].includes(side)) return;
       const previousState = captureDecisionState();
       resolutions.document = {choice: side};
       draftRowStructurePreference = side;
@@ -1260,11 +1623,13 @@
     }
 
     function fillUnresolved(side) {
-      if (sessionEnded || !["base", "local", "remote"].includes(side)) return;
+      if (decisionsLocked() || !["base", "local", "remote"].includes(side)) return;
       const previousState = captureDecisionState();
       delete resolutions.document;
       model.conflicts.forEach(conflict => {
-        if (!resolutions[conflict.key]) resolutions[conflict.key] = {choice: side};
+        if (!resolutions[conflict.key]) {
+          resolutions[conflict.key] = {choice: side};
+        }
       });
       if (model.conflicts.some(conflict => conflict.kind === "row")) {
         draftRowStructurePreference = side;
@@ -1276,7 +1641,7 @@
     }
 
     function chooseAll(side) {
-      if (sessionEnded || !["base", "local", "remote"].includes(side)) return;
+      if (decisionsLocked() || !["base", "local", "remote"].includes(side)) return;
       const previousState = captureDecisionState();
       delete resolutions.document;
       model.conflicts.forEach(conflict => {
@@ -1297,6 +1662,125 @@
       document.getElementById("conflictPosition").textContent = `${current} / ${total}`;
       document.getElementById("previousConflict").disabled = total === 0;
       document.getElementById("nextConflict").disabled = total === 0;
+    }
+
+    function moveGroupConflicts(conflict) {
+      return model.conflicts.filter(other =>
+        other.move_group &&
+        other.move_group === conflict.move_group
+      );
+    }
+
+    // Move regions that also add or delete rows cannot be faithfully faked in
+    // the provisional overlay: the borrowed single-side layout has a different
+    // set of rows there. Such regions are only exact after Render exact, so the
+    // draft leaves their rows as the 1C-rendered content rather than overlaying
+    // mismatched (often empty) values on top.
+    const structuralMoveGroups = new Set(
+      model.conflicts
+        .filter(conflict => conflict.move_group &&
+          (conflict.operation === "add" || conflict.operation === "delete"))
+        .map(conflict => conflict.move_group)
+    );
+    // Base-coordinate span of each structural region → its move_group id. Every
+    // row inside such a span — reordered, added, deleted, or merely displaced —
+    // is left as borrowed 1C content in the draft (the overlay cannot place it
+    // until the structure is composed) but is still outlined as the block.
+    const structuralGroupByRange = new Map(
+      model.conflicts
+        .filter(conflict => conflict.move_group &&
+          structuralMoveGroups.has(conflict.move_group) &&
+          Array.isArray(conflict.move_group_range))
+        .map(conflict => [conflict.move_group, conflict.move_group_range])
+    );
+    function structuralRegionGroupOf(row) {
+      const group = row.row_conflict_key
+        ? conflictByKey[row.row_conflict_key]?.move_group
+        : null;
+      if (group && structuralMoveGroups.has(group)) return group;
+      const match = /^R(\d+)/.exec(row.coordinates?.base || "");
+      if (!match) return null;
+      const rowNumber = Number(match[1]);
+      for (const [groupId, [start, end]] of structuralGroupByRange) {
+        if (rowNumber >= start && rowNumber <= end) return groupId;
+      }
+      return null;
+    }
+    function rowInStructuralRegion(row) {
+      return Boolean(structuralRegionGroupOf(row));
+    }
+
+    function conflictUnitInfo(conflict) {
+      if (conflict.kind === "structural") {
+        return {typeLabel: "Document", coordinate: "structure", resolved: Boolean(resolutions.structural)};
+      }
+      if (conflict.kind === "row") {
+        if (conflict.move_group) {
+          const members = moveGroupConflicts(conflict);
+          const range = conflict.move_group_range;
+          return {
+            typeLabel: "Row order",
+            coordinate: range ? `R${range[0]}–R${range[1]}` : "",
+            resolved: members.every(member => Boolean(resolutions[member.key])),
+          };
+        }
+        return {
+          typeLabel: `Row ${conflict.operation}`,
+          coordinate: rowPositionCoordinate(
+            conflict,
+            resolutions[conflict.key]?.choice || "base"
+          ),
+          resolved: Boolean(resolutions[conflict.key]),
+        };
+      }
+      return {
+        typeLabel: "Cell",
+        coordinate: selectedConflictCoordinate(conflict) || conflictCoordinate(conflict, "base"),
+        resolved: Boolean(resolutions[conflict.key]),
+      };
+    }
+
+    function renderConflictList() {
+      const list = document.getElementById("conflictList");
+      if (!list) return;
+      list.replaceChildren();
+      if (!conflictKeys.length) {
+        const empty = document.createElement("div");
+        empty.className = "conflict-list-empty";
+        empty.textContent = "No conflicts require a decision.";
+        list.append(empty);
+        return;
+      }
+      const documentChoice = wholeDocumentChoice();
+      const activeUnit = conflictByKey[activeConflictKey]
+        ? navigationUnitKey(conflictByKey[activeConflictKey])
+        : null;
+      conflictKeys.forEach((key, index) => {
+        const conflict = conflictByKey[key];
+        if (!conflict) return;
+        const info = conflictUnitInfo(conflict);
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "conflict-item";
+        const resolved = Boolean(documentChoice) || info.resolved;
+        item.classList.toggle("resolved", resolved);
+        item.classList.toggle("active", key === activeUnit);
+        const dot = document.createElement("span");
+        dot.className = "conflict-item-dot";
+        const body = document.createElement("span");
+        body.className = "conflict-item-body";
+        // Coordinate is the primary marker; the conflict type is secondary.
+        const coordinate = document.createElement("span");
+        coordinate.className = "conflict-item-coordinate";
+        coordinate.textContent = `${index + 1}. ${info.coordinate || "—"}`;
+        const label = document.createElement("span");
+        label.className = "conflict-item-label";
+        label.textContent = info.typeLabel;
+        body.append(coordinate, label);
+        item.append(dot, body);
+        item.addEventListener("click", () => showFieldPicker(key, true, null));
+        list.append(item);
+      });
     }
 
     function scrollFrameElementIntoView(element) {
@@ -1405,11 +1889,12 @@
       activeConflictKey = conflictKey;
       const picker = document.getElementById("sourcePicker");
       const conflict = conflictByKey[conflictKey];
-      activeConflictIndex = conflict ? conflictKeys.indexOf(conflictKey) : -1;
+      activeConflictIndex = conflict ? navigationIndexForKey(conflictKey) : -1;
       document.querySelectorAll(".conflict-card").forEach(card => {
         card.classList.toggle("active-conflict-card", card.dataset.key === conflictKey);
       });
       updateConflictNavigation();
+      renderConflictList();
       highlightActiveConflict(conflict, focusSources);
       picker.replaceChildren();
       picker.scrollTop = 0;
@@ -1425,7 +1910,9 @@
       title.textContent = conflict.kind === "structural"
         ? "Structural conflict · choose the complete source document"
         : conflict.kind === "row"
-          ? conflict.requires_choice === false
+          ? conflict.move_group
+            ? `Row order · choose the side for this whole reordered block`
+            : conflict.requires_choice === false
             ? `Automatic row ${conflict.operation} · override the preselected source if needed`
             : `Row ${conflict.operation} conflict · choose whether and where this row belongs`
           : conflict.requires_choice === false
@@ -1440,8 +1927,11 @@
             selectedSide && selectedSide !== "manual" ? selectedSide : "base"
           )
         : selectedConflictCoordinate(conflict, activeFieldId);
+      const moveRange = conflict.move_group ? conflict.move_group_range : null;
       location.textContent = activeFieldId
         ? `Selected cell · ${selectedCoordinate || "coordinate unavailable"}`
+        : moveRange
+          ? `Reordered block · rows ${moveRange[0]}–${moveRange[1]}`
         : conflict.kind === "row"
           ? `Affected row · ${selectedCoordinate || "coordinate unavailable"}`
         : conflict.kind === "structural"
@@ -1494,6 +1984,7 @@
       const doc = frame.contentDocument;
       if (!doc?.body) return;
       installFrameStyles(doc);
+      doc.documentElement.dataset.mxlPanel = "source";
       const elements = frameContentElements(doc);
       elements.forEach(element => element.classList.add("mxl-content"));
       const used = new Set();
@@ -1508,7 +1999,7 @@
           rowOccurrence(row, side)
         );
         if (!element) return;
-        markElement(element, row, side);
+        markElement(element, row, side, "source");
         sourceElements[side].set(row.id, element);
         element.addEventListener("click", event => {
           event.preventDefault();
@@ -1563,11 +2054,20 @@
     function draftResolvedRowValue(row) {
       const rowSource = selectedRowStructureSource();
       if (row.row_conflict_key && (rowSource === undefined || rowSource === "")) {
-        const provisionalSource = draftRowStructureSource();
-        return {
-          unresolved: !resolutions[row.conflict_key],
-          value: row[provisionalSource]
-        };
+        // Once the row itself is decided, the provisional skeleton no longer
+        // dictates its content: show what the decision keeps, not what the
+        // borrowed layout happens to hold.
+        const rowChoice = resolutions[row.row_conflict_key]?.choice;
+        const decided = Boolean(rowChoice) &&
+          rowChoice !== "manual" &&
+          conflictByKey[row.row_conflict_key]?.states?.[rowChoice] !== "absent";
+        if (!decided) {
+          const provisionalSource = draftRowStructureSource();
+          return {
+            unresolved: !resolutions[row.conflict_key],
+            value: row[provisionalSource]
+          };
+        }
       }
       return resolvedRowValue(row);
     }
@@ -1583,7 +2083,141 @@
         element.dataset.mxlPlaceholder = unresolvedField ? "Click to choose source" : "";
         element.textContent = resolved.value === null || resolved.value === undefined ? "" : String(resolved.value);
         element.classList.toggle("mxl-selected-source", Boolean(resolution));
+        // Recolour on every decision: in the result the colour is where the
+        // value came from, which a new choice can change.
+        setVisualState(element, valueSourceState(row));
         setElementChip(element, resolution?.choice || null);
+      });
+    }
+
+    // A structural move region can't be faithfully overlaid onto one side's
+    // borrowed layout. Until it is composed it is shown as a single block:
+    // a placeholder (like a row deletion) while unresolved, or the chosen
+    // side's borrowed rows outlined as chosen once decided.
+    // The ordered matching walk the draft passes share. Fields are located by
+    // text plus an occurrence index counted over semanticRows, so the elements
+    // have to be claimed once, in that same order — a second walk over a subset
+    // silently drifts onto other rows.
+    function matchDraftRows(elements, source) {
+      const used = new Set();
+      const rows = [];
+      semanticRows.filter(row =>
+        (row.state !== "unchanged" || row.row_conflict_key) &&
+        (!row.row_conflict_key ||
+          conflictByKey[row.row_conflict_key]?.states?.[source] !== "absent") &&
+        row[source] !== null && row[source] !== undefined &&
+        // Structural regions are selected by coordinate, not by field.
+        !rowInStructuralRegion(row)
+      ).forEach(row => {
+        const element = findFieldElement(
+          elements, row[source], used, rowOccurrence(row, source)
+        );
+        if (element) rows.push({row, element});
+      });
+      return {rows};
+    }
+
+    // Which rendered rows belong to a move region, by coordinate rather than by
+    // text. Matching a block's rows by value cannot work: a repeated date or
+    // company name matches all over the sheet, so the block used to claim rows
+    // like R7 and R12 that lie far outside its span. A row carries one anchor
+    // per cell, so the median of its anchors' row numbers survives a single bad
+    // text match, and membership is then a plain range test.
+    function structuralRegionRowsByGroup(elements, source, valueOf = null) {
+      const groups = new Map();
+      if (!structuralMoveGroups.size) return groups;
+      const spans = new Map();
+      semanticRows.forEach(row => {
+        const group = structuralRegionGroupOf(row);
+        if (!group) return;
+        const coordinate = parseCoordinate(coordinateForRow(row, source));
+        if (!coordinate) return;
+        const span = spans.get(group) || {start: Infinity, end: -Infinity};
+        span.start = Math.min(span.start, coordinate.row);
+        span.end = Math.max(span.end, coordinate.row);
+        spans.set(group, span);
+      });
+      if (!spans.size) return groups;
+      const anchors = coordinateAnchors(
+        elements, source, valueOf || (row => row[source])
+      );
+      const anchorRowsByTableRow = new Map();
+      anchors.forEach(anchor => {
+        const tableRow = anchor.element.closest("tr");
+        if (!tableRow) return;
+        if (!anchorRowsByTableRow.has(tableRow)) anchorRowsByTableRow.set(tableRow, []);
+        anchorRowsByTableRow.get(tableRow).push(anchor.row);
+      });
+      anchorRowsByTableRow.forEach((rowNumbers, tableRow) => {
+        const rowNumber = median(rowNumbers);
+        for (const [group, span] of spans) {
+          if (rowNumber < span.start || rowNumber > span.end) continue;
+          if (!groups.has(group)) groups.set(group, []);
+          groups.get(group).push(tableRow);
+          break;
+        }
+      });
+      return groups;
+    }
+
+    function applyStructuralRegionMarkers(doc, regionRows) {
+      if (!structuralMoveGroups.size || !doc?.body || !regionRows?.size) return;
+      regionRows.forEach((items, group) => {
+        const key = moveGroupRepresentative[group];
+        const decided = resolutions[key]?.choice;
+        const openRegion = event => {
+          event.preventDefault();
+          event.stopPropagation();
+          showFieldPicker(key, true, null);
+        };
+        if (decided) {
+          // Resolved: show the chosen side's borrowed rows, outlined as chosen.
+          // mxl-row-region-line keeps the whole block legible above the dim
+          // layer; tagging the row itself as mxl-content instead would match
+          // the "content without a change of its own" dim rule and grey out the
+          // very block this is meant to highlight.
+          items.forEach(tableRow => {
+            tableRow.classList.add(
+              "mxl-row-region-line",
+              "mxl-row-change-line",
+              `mxl-state-${decided}`,
+              "mxl-clickable"
+            );
+            tableRow.dataset.mxlConflictKey = key;
+            tableRow.addEventListener("click", openRegion);
+          });
+          return;
+        }
+        // Unresolved: collapse the whole block into one placeholder, like a row
+        // deletion, rather than showing a misleading borrowed layout.
+        // 1C splits a sheet into many tables, so a block routinely spans several
+        // of them with spacer rows in between that carry no coordinate of their
+        // own. The block is one contiguous range, so collapse everything
+        // rendered between its first and last row.
+        const documentRows = [...doc.querySelectorAll("tr")];
+        const positions = items
+          .map(node => documentRows.indexOf(node))
+          .filter(index => index >= 0);
+        const tableRows = positions.length
+          ? documentRows.slice(Math.min(...positions), Math.max(...positions) + 1)
+          : items;
+        const anchor = tableRows[0];
+        if (anchor?.parentNode) {
+          const marker = doc.createElement("tr");
+          marker.className = "mxl-row-placeholder mxl-conflict";
+          const cell = doc.createElement("td");
+          cell.colSpan = Math.max(1, ...tableRows.map(node => node.cells?.length || 0));
+          const range = structuralGroupByRange.get(group);
+          cell.textContent = range
+            ? `R${range[0]}–R${range[1]} · Reordered block — choose Base, Local, or Remote`
+            : "Reordered block — choose Base, Local, or Remote";
+          marker.append(cell);
+          anchor.before(marker);
+          marker.dataset.mxlConflictKey = key;
+          marker.dataset.mxlRowPlaceholderState = "unresolved";
+          marker.addEventListener("click", openRegion);
+        }
+        tableRows.forEach(node => node.classList.add("mxl-row-provisional-hidden"));
       });
     }
 
@@ -1592,23 +2226,18 @@
       const doc = frame.contentDocument;
       if (!doc?.body) return;
       installFrameStyles(doc);
+      doc.documentElement.dataset.mxlPanel = "result";
+      // Imported rows must not be mistaken for the layout's own content.
+      clearRowConflictMarkers(doc);
       const elements = frameContentElements(doc);
       elements.forEach(element => element.classList.add("mxl-content"));
       resultElements.clear();
-      const used = new Set();
       const source = draftRowStructureSource();
-      semanticRows.filter(row =>
-        (row.state !== "unchanged" || row.row_conflict_key) &&
-        (!row.row_conflict_key || conflictByKey[row.row_conflict_key]?.states?.[source] !== "absent") &&
-        row[source] !== null && row[source] !== undefined
-      ).forEach(row => {
-        const element = findFieldElement(
-          elements,
-          row[source],
-          used,
-          rowOccurrence(row, source)
-        );
-        if (!element) return;
+      const {rows} = matchDraftRows(elements, source);
+      // Region membership is read off the layout before placeholders import
+      // rows, so the imported ones cannot shift the coordinate anchors.
+      const regionRows = structuralRegionRowsByGroup(elements, source);
+      rows.forEach(({row, element}) => {
         markElement(element, row, source);
         resultElements.set(row.id, element);
         element.addEventListener("click", event => {
@@ -1621,7 +2250,10 @@
           );
         });
       });
-      renderRowConflictPlaceholders(doc, "result", source, elements);
+      renderRowConflictPlaceholders(doc, "result", source, elements, true);
+      // After placeholders: renderRowConflictPlaceholders clears markers and
+      // un-hides rows, so the structural-region block must be applied last.
+      applyStructuralRegionMarkers(doc, regionRows);
       installFrameCoordinateRulers(frame, source, elements);
       applyFrameViewState(doc);
       updateDraftResultFields();
@@ -1634,11 +2266,20 @@
       const doc = frame.contentDocument;
       if (!doc?.body) return;
       installFrameStyles(doc);
+      doc.documentElement.dataset.mxlPanel = "result";
+      clearRowConflictMarkers(doc);
       const elements = frameContentElements(doc);
       elements.forEach(element => element.classList.add("mxl-content"));
       const used = new Set();
       const source = selectedRowStructureSource() || resolutions.structural?.choice || "base";
-      semanticRows.filter(row => row.state !== "unchanged" || row.row_conflict_key).forEach(row => {
+      // As in the draft, the block is selected by coordinate rather than field.
+      const regionRows = structuralRegionRowsByGroup(
+        elements, source, row => resolvedRowValue(row).value
+      );
+      semanticRows.filter(row =>
+        (row.state !== "unchanged" || row.row_conflict_key) &&
+        !rowInStructuralRegion(row)
+      ).forEach(row => {
         const resolved = resolvedRowValue(row);
         if (resolved.unresolved) return;
         const element = findFieldElement(
@@ -1660,12 +2301,33 @@
           );
         });
       });
+      const manualUsed = new Set();
+      manualChanges.filter(change => change.after !== null).forEach(change => {
+        const element = findFieldElement(elements, change.after, manualUsed);
+        if (!element) return;
+        const originalRow = semanticRows.find(row =>
+          change.generated_coordinate &&
+          Object.values(row.coordinates || {}).includes(change.generated_coordinate)
+        );
+        const sourceChoice = resolutionForRow(originalRow)?.choice || null;
+        element.classList.add("mxl-content", "mxl-change", "mxl-manual-edit");
+        if (change.operation === "add") {
+          element.closest("tr")?.classList.add("mxl-manual-row-edit");
+        }
+        if (change.edited_coordinate) {
+          element.dataset.mxlCoordinate = change.edited_coordinate;
+        }
+        setManualEditChip(element, sourceChoice);
+      });
       renderRowConflictPlaceholders(
         doc,
         "result",
         source,
         elements
       );
+      // After placeholders, as in the draft: the composed block is still one
+      // decision, so it stays outlined as a block here too.
+      applyStructuralRegionMarkers(doc, regionRows);
       installFrameCoordinateRulers(
         frame,
         source,
@@ -1702,8 +2364,12 @@
           "unresolved row conflicts are placeholders";
       } else if (rowSource === "") {
         status.textContent =
-          `Showing the ${draftSource[0].toUpperCase()}${draftSource.slice(1)} layout; ` +
-          "the selected row combination is incompatible and cannot be saved";
+          `Showing a provisional ${draftSource[0].toUpperCase()}${draftSource.slice(1)} layout; ` +
+          "the mixed row structure will be composed when rendered or saved";
+      } else if (structuralMoveGroups.size) {
+        status.textContent =
+          "Reordered blocks with added or removed rows are shown as-is here — " +
+          "click Render exact for the composed layout";
       } else {
         status.textContent = "";
       }
@@ -1713,14 +2379,24 @@
         frame.dataset.source = `draft-${source}`;
         frame.src = desired;
       } else if (documentChoice || !structural) {
-        updateDraftResultFields();
         const doc = frame.contentDocument;
         if (doc?.body) {
+          // Markers first: restored rows register result fields that the field
+          // pass then fills, and stale ones must not shadow the layout's rows.
+          clearRowConflictMarkers(doc);
           doc.querySelectorAll(".mxl-row-provisional-hidden").forEach(node =>
             node.classList.remove("mxl-row-provisional-hidden")
           );
-          renderRowConflictPlaceholders(doc, "result", source, frameContentElements(doc));
+          const currentElements = frameContentElements(doc);
+          // Read the block off the layout before the placeholders import rows,
+          // for the same reason the full pass does.
+          const regionRows = structuralRegionRowsByGroup(currentElements, source);
+          renderRowConflictPlaceholders(doc, "result", source, currentElements, true);
+          applyStructuralRegionMarkers(doc, regionRows);
+          updateDraftResultFields();
           highlightActiveConflict(conflictByKey[activeConflictKey]);
+        } else {
+          updateDraftResultFields();
         }
         focusPendingResultConflict();
       }
@@ -1770,6 +2446,144 @@
       refreshExactResult(exactPreviewGeneration);
     }
 
+    function applyEditorStatus(status, forcePreview = false) {
+      const wasActive = externalEditActive;
+      const wasRunning = externalEditorRunning;
+      externalEditActive = Boolean(status.active);
+      externalEditorRunning = Boolean(status.running);
+      externalEditRevision = Number(status.revision || 0);
+      manualChanges = Array.isArray(status.changes) ? status.changes : [];
+      manualChangeCounts = status.counts || {edit: 0, add: 0, delete: 0};
+      manualUnmapped = Boolean(status.unmapped);
+      manualEditsPresent = status.changed === undefined
+        ? Boolean(manualChanges.length || manualUnmapped)
+        : Boolean(status.changed);
+      const previewRevision = Number(status.previewRevision || 0);
+      const resultStatus = document.getElementById("resultStatus");
+      if (externalEditActive) {
+        resultStatus.textContent = externalEditorRunning
+          ? "Manual editing is active. Merge decisions are locked; close 1C and discard manual edits to change them."
+          : `${manualEditSummary()}. Merge decisions are locked; discard manual edits to change them.`;
+        resultStatus.classList.toggle(
+          "manual-edit-summary",
+          !externalEditorRunning
+        );
+      } else {
+        resultStatus.textContent = "";
+        resultStatus.classList.remove("manual-edit-summary");
+      }
+      if (
+        externalEditActive &&
+        previewRevision &&
+        (forcePreview || previewRevision !== externalPreviewRevision)
+      ) {
+        externalPreviewRevision = previewRevision;
+        const frame = document.getElementById("resultFrame");
+        frame.dataset.source = "exact";
+        frame.src = `/preview/${token}/result?v=${previewRevision}`;
+      }
+      if (wasRunning && !externalEditorRunning && externalEditActive) {
+        showToast(manualEditSummary());
+      } else if (wasActive && !externalEditActive) {
+        showDraftResult();
+        showToast(
+          status.closedUnchanged
+            ? "1C editor closed without changes"
+            : "1C editor session closed"
+        );
+      }
+      updateProgress();
+    }
+
+    async function readEditorStatus() {
+      if (sessionEnded || !externalEditActive) return;
+      try {
+        const response = await fetch(`${apiBase}/edit-status`, {cache: "no-store"});
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || "Unable to read editor status");
+        applyEditorStatus(status);
+      } catch (error) {
+        showToast(`1C editor: ${error.message}`, true);
+      } finally {
+        if (!sessionEnded && externalEditActive) {
+          editorPollTimer = setTimeout(readEditorStatus, 1200);
+        }
+      }
+    }
+
+    async function reloadEditedResult(showMessage = true) {
+      reloadEditedButton.disabled = true;
+      try {
+        const response = await fetch(`${apiBase}/reload-edited`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: "{}"
+        });
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || "Unable to reload edited MXL");
+        applyEditorStatus(status, true);
+        if (showMessage) showToast(manualEditSummary());
+      } catch (error) {
+        showToast(`Reload from 1C: ${error.message}`, true);
+      } finally {
+        reloadEditedButton.disabled = false;
+      }
+    }
+
+    async function beginExternalEdit() {
+      if (sessionEnded || externalEditorRunning || !allConflictsResolved()) return;
+      const reopening = externalEditActive;
+      editIn1CButton.disabled = true;
+      editIn1CButton.textContent = "Opening…";
+      try {
+        const response = await fetch(`${apiBase}/edit-result`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({resolutions})
+        });
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || "Unable to open merged MXL");
+        applyEditorStatus(status);
+        await reloadEditedResult(false);
+        clearTimeout(editorPollTimer);
+        editorPollTimer = setTimeout(readEditorStatus, 1200);
+        showToast(
+          reopening
+            ? "Editable copy reopened in 1C; earlier manual edits were preserved"
+            : "Editable merged copy opened in 1C; merge decisions are locked"
+        );
+      } catch (error) {
+        showToast(error.message, true);
+      } finally {
+        updateProgress();
+      }
+    }
+
+    async function discardExternalEdits() {
+      if (!externalEditActive) return;
+      try {
+        const response = await fetch(`${apiBase}/discard-edited`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: "{}"
+        });
+        const status = await response.json();
+        if (!response.ok) throw new Error(status.error || "Unable to discard manual edits");
+        clearTimeout(editorPollTimer);
+        externalEditActive = false;
+        manualChanges = [];
+        manualChangeCounts = {edit: 0, add: 0, delete: 0};
+        manualUnmapped = false;
+        manualEditsPresent = false;
+        externalPreviewRevision = Number(status.previewRevision || 0);
+        showDraftResult();
+        updateProgress();
+        showToast("Manual MXL edits discarded; merge decisions are unlocked");
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    }
+
     function choose(
       key,
       choice,
@@ -1777,10 +2591,27 @@
       focusResult = false,
       historyGroup = null
     ) {
-      if (sessionEnded) return;
+      if (decisionsLocked()) return;
       const previousState = captureDecisionState();
       delete resolutions.document;
       resolutions[key] = choice === "manual" ? {choice, value} : {choice};
+      // A move region is decided at once: choosing a side for one of its rows
+      // applies to every row in the block — reorders, additions and deletions —
+      // since order and structure can only be taken consistently from one side.
+      const chosenConflict = conflictByKey[key];
+      if (
+        chosenConflict?.move_group &&
+        ["base", "local", "remote"].includes(choice)
+      ) {
+        model.conflicts.forEach(other => {
+          if (
+            other !== chosenConflict &&
+            other.move_group === chosenConflict.move_group
+          ) {
+            resolutions[other.key] = {choice};
+          }
+        });
+      }
       if (
         conflictByKey[key]?.kind === "row" &&
         ["base", "local", "remote"].includes(choice)
@@ -1963,6 +2794,21 @@
       }, 500);
     }
 
+    async function openSourceCopy(side) {
+      try {
+        const response = await fetch(`${apiBase}/open-source`, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({side})
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Unable to open source copy");
+        showToast(`Opened a read-only ${side} copy in 1C`);
+      } catch (error) {
+        showToast(error.message, true);
+      }
+    }
+
     function renderRenderedPreviews(preview = model.previews.rendered) {
       const node = document.getElementById("renderedPreviews");
       node.replaceChildren();
@@ -2118,7 +2964,7 @@
     undoButton.addEventListener("click", undoDecision);
     redoButton.addEventListener("click", redoDecision);
     document.addEventListener("keydown", event => {
-      if (sessionEnded || (!event.ctrlKey && !event.metaKey) || event.altKey) return;
+      if (decisionsLocked() || (!event.ctrlKey && !event.metaKey) || event.altKey) return;
       const key = event.key.toLowerCase();
       if (key === "z") {
         event.preventDefault();
@@ -2152,6 +2998,16 @@
     document.getElementById("previousConflict").addEventListener("click", () => navigateConflict(-1));
     document.getElementById("nextConflict").addEventListener("click", () => navigateConflict(1));
     document.getElementById("refreshExactButton").addEventListener("click", requestExactResult);
+    editIn1CButton.addEventListener("click", beginExternalEdit);
+    reloadEditedButton.addEventListener("click", () => reloadEditedResult(true));
+    discardEditedButton.addEventListener("click", discardExternalEdits);
+    document.querySelectorAll("[data-open-source]").forEach(button => {
+      button.disabled = !model.fileEditor?.available;
+      button.title = model.fileEditor?.available
+        ? `Open a disposable read-only ${button.dataset.openSource} copy in 1C`
+        : "Configure 1cv8fv.exe with mxl-tool install --onec-file-editor";
+      button.addEventListener("click", () => openSourceCopy(button.dataset.openSource));
+    });
 
     document.getElementById("resultFrame").addEventListener("load", () => {
       const frame = document.getElementById("resultFrame");

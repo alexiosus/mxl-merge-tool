@@ -33,6 +33,10 @@ class OneCRenderError(RuntimeError):
     """Raised when the 1C renderer cannot produce a valid HTML file."""
 
 
+class MxlEditorError(RuntimeError):
+    """Raised when an MXL file cannot be opened in the external editor."""
+
+
 @dataclass(frozen=True)
 class OneCRenderSettings:
     client_exe: Path
@@ -64,6 +68,59 @@ def _configured_value(explicit: str | None, environment: str, git_key: str) -> s
     if environment_value:
         return environment_value
     return _git_config(git_key)
+
+
+def configured_mxl_editor(explicit: str | None = None) -> Path | None:
+    """Return the configured 1C file editor executable, if it is usable."""
+    value = _configured_value(
+        explicit, "MXL_ONEC_FILE_EDITOR", "mxl.onecFileEditor"
+    )
+    if not value:
+        return None
+    editor = Path(value).expanduser().resolve()
+    return editor if editor.is_file() else None
+
+
+def mxl_editor_available(explicit: str | None = None) -> bool:
+    """Whether the UI can ask the operating system to edit an MXL file."""
+    return configured_mxl_editor(explicit) is not None or (
+        os.name == "nt" and hasattr(os, "startfile")
+    )
+
+
+def launch_mxl_editor(
+    path: str | Path, explicit: str | None = None
+) -> subprocess.Popen[bytes] | None:
+    """Open an MXL file without invoking a shell.
+
+    A configured ``1cv8fv.exe`` is preferred. On Windows, the registered MXL
+    application is a fallback; that API does not expose a process handle.
+    """
+    document = Path(path).resolve()
+    if not document.is_file():
+        raise MxlEditorError(f"MXL file was not found: {document}")
+    editor = configured_mxl_editor(explicit)
+    if editor is not None:
+        try:
+            return subprocess.Popen(
+                [str(editor), str(document)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError as error:
+            raise MxlEditorError(
+                f"Unable to start the MXL editor {editor}: {error}"
+            ) from error
+    if os.name == "nt" and hasattr(os, "startfile"):
+        try:
+            os.startfile(str(document))  # type: ignore[attr-defined]
+        except OSError as error:
+            raise MxlEditorError(f"Unable to open {document}: {error}") from error
+        return None
+    raise MxlEditorError(
+        "1C file editor is not configured; run install with "
+        "--onec-file-editor or set MXL_ONEC_FILE_EDITOR"
+    )
 
 
 def _platform_version(client_exe: Path) -> str:

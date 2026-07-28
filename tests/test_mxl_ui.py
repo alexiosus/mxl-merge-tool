@@ -65,7 +65,11 @@ class MxlUiTests(unittest.TestCase):
         self.assertIn('data-mxl-chip-choice="local"', html)
         self.assertIn("const placeholderBands", html)
         self.assertIn("marker.dataset.mxlRowCoordinate = rowCoordinate", html)
-        self.assertIn('label.textContent = band.state === "unresolved" ? "?" : "×"', html)
+        self.assertIn('band.state === "unresolved"', html)
+        self.assertIn('band.row != null ? String(band.row) : "+"', html)
+        self.assertIn("function importRestoredRow", html)
+        self.assertIn("function clearRowConflictMarkers", html)
+        self.assertIn('conflict.states?.[lookupSide] === "absent"', html)
         self.assertIn(
             'frameWindow.addEventListener("scroll", refreshRulers',
             html,
@@ -94,6 +98,11 @@ class MxlUiTests(unittest.TestCase):
         self.assertIn("function conflictVisualElement", html)
         self.assertIn("const requiresManualChoice", html)
         self.assertIn("function draftRowStructureSource", html)
+        self.assertIn("function selectedMoveStructureSource", html)
+        self.assertIn(
+            "if (selected === \"\" && selectedMoveSource) return selectedMoveSource",
+            html,
+        )
         self.assertIn("draftRowStructurePreference = choice", html)
         self.assertIn(
             "const source = documentChoice || structuralChoice || draftSource",
@@ -108,6 +117,27 @@ class MxlUiTests(unittest.TestCase):
         self.assertIn("function undoDecision", html)
         self.assertIn("function redoDecision", html)
         self.assertIn("function bindManualHistory", html)
+        self.assertIn('id="editIn1CButton"', html)
+        self.assertIn('id="reloadEditedButton"', html)
+        self.assertIn('id="discardEditedButton"', html)
+        self.assertIn("open-source", html)
+        self.assertIn("edit-result", html)
+        self.assertIn("reload-edited", html)
+        self.assertIn("discard-edited", html)
+        self.assertIn(
+            "discardEditedButton.hidden = !externalEditActive || !manualEditsPresent",
+            html,
+        )
+        self.assertIn('"Edit again in 1C"', html)
+        self.assertIn("earlier manual edits were preserved", html)
+        self.assertIn(
+            "Merge decisions are locked; discard manual edits to change them",
+            html,
+        )
+        self.assertIn("1C editor closed without changes", html)
+        self.assertIn("decisionsLocked", html)
+        self.assertIn("→ EDITED", html)
+        self.assertIn("mxl-manual-edit", html)
         self.assertIn("function chooseAll", html)
         self.assertIn('const historyGroup = `manual:${key}`', html)
         self.assertIn('if (event.shiftKey) redoDecision()', html)
@@ -115,7 +145,7 @@ class MxlUiTests(unittest.TestCase):
         self.assertIn("data-whole-document", html)
         self.assertIn("Resolve pending", html)
         self.assertIn(
-            "the selected row combination is incompatible and cannot be saved",
+            "the mixed row structure will be composed when rendered or saved",
             html,
         )
         self.assertIn("unresolved row conflicts are placeholders", html)
@@ -124,6 +154,24 @@ class MxlUiTests(unittest.TestCase):
         self.assertIn("Selected cell · ${selectedCoordinate", html)
         self.assertIn("mxlCoordinate", html)
         self.assertIn("data-mxl-chip", html)
+        self.assertNotIn("element.dataset.mxlChip = coordinate", html)
+        self.assertIn("setElementChip(element, null)", html)
+        self.assertIn("function valueSourceState", html)
+        self.assertIn('markElement(element, row, side, "source")', html)
+        self.assertIn('doc.documentElement.dataset.mxlPanel = "result"', html)
+        self.assertIn('html[data-mxl-panel="source"] .mxl-selected-source', html)
+        self.assertIn("other.move_group === chosenConflict.move_group", html)
+        self.assertIn("const structuralMoveGroups = new Set(", html)
+        self.assertIn("function rowInStructuralRegion", html)
+        self.assertIn("function applyStructuralRegionMarkers", html)
+        self.assertIn("Reordered block — choose Base, Local, or Remote", html)
+        self.assertIn("Reordered blocks with added or removed rows are shown as-is", html)
+        self.assertIn("function renderConflictList", html)
+        self.assertIn("const navigationUnitKey", html)
+        self.assertIn('id="conflictList"', html)
+        self.assertIn("function conflictUnitInfo", html)
+        self.assertIn("Row order · choose the side for this whole reordered block", html)
+        self.assertIn("Reordered block · rows", html)
         self.assertIn("semantic-coordinate", html)
         self.assertIn("structural-row-change", html)
         self.assertIn("unresolved — choose Base, Local, or Remote", html)
@@ -194,6 +242,176 @@ class MxlUiTests(unittest.TestCase):
                 time.sleep(0.01)
 
         self.assertFalse(session.preview_loading)
+
+    def test_source_is_opened_as_disposable_read_only_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {}
+            for side, value in (("base", "A"), ("local", "L"), ("remote", "R")):
+                path = root / f"{side}.mxl"
+                path.write_bytes(make_mxl([value]))
+                paths[side] = path
+            editor = root / "1cv8fv.exe"
+            editor.write_bytes(b"test")
+            session = UiSession.from_paths(
+                str(paths["base"]),
+                str(paths["local"]),
+                str(paths["remote"]),
+                str(root / "merged.mxl"),
+            )
+            session.configure_file_editor(str(editor))
+
+            with patch("mxl_ui.launch_mxl_editor", return_value=None) as launch:
+                snapshot, process = session.open_source_copy("local")
+
+            self.assertIsNone(process)
+            self.assertNotEqual(paths["local"], snapshot)
+            self.assertEqual(paths["local"].read_bytes(), snapshot.read_bytes())
+            self.assertEqual(0, snapshot.stat().st_mode & 0o222)
+            launch.assert_called_once_with(snapshot, str(editor))
+            snapshot.chmod(0o644)
+            snapshot.write_bytes(make_mxl(["Changed copy"]))
+            self.assertEqual(["L"], semantic_values(parse_document(paths["local"].read_bytes())))
+            workspace = session.editor_workspace
+            session.cleanup()
+            self.assertFalse(workspace.exists())
+
+    def test_manual_result_reload_is_marked_and_saved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {}
+            for side, value in (
+                ("base", "Base"),
+                ("local", "Local"),
+                ("remote", "Remote"),
+            ):
+                path = root / f"{side}.mxl"
+                path.write_bytes(make_mxl([value]))
+                paths[side] = path
+            editor = root / "1cv8fv.exe"
+            editor.write_bytes(b"test")
+            session = UiSession.from_paths(
+                str(paths["base"]),
+                str(paths["local"]),
+                str(paths["remote"]),
+                str(root / "merged.mxl"),
+            )
+            session.configure_file_editor(str(editor))
+            conflict = session.initial_result().conflicts[0]
+            resolutions = {str(conflict["token_index"]): {"choice": "local"}}
+
+            with patch("mxl_ui.launch_mxl_editor", return_value=None):
+                result, editable = session.begin_manual_edit(resolutions)
+
+            self.assertTrue(result.success)
+            assert editable is not None
+            editable.write_bytes(make_mxl(["Edited in 1C"]))
+            status = session.reload_manual_edit()
+            saved = session.resolve(resolutions)
+
+            self.assertTrue(saved.success)
+            self.assertEqual(1, status["counts"]["edit"])
+            self.assertEqual("edit", status["changes"][0]["operation"])
+            self.assertEqual("Local", status["changes"][0]["before"])
+            self.assertEqual("Edited in 1C", status["changes"][0]["after"])
+            self.assertEqual(
+                ["Edited in 1C"],
+                semantic_values(parse_document((root / "merged.mxl").read_bytes())),
+            )
+            session.cleanup()
+
+    def test_manual_editor_can_reopen_without_losing_original_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {}
+            for side, value in (
+                ("base", "Base"),
+                ("local", "Local"),
+                ("remote", "Remote"),
+            ):
+                path = root / f"{side}.mxl"
+                path.write_bytes(make_mxl([value]))
+                paths[side] = path
+            editor = root / "1cv8fv.exe"
+            editor.write_bytes(b"test")
+            session = UiSession.from_paths(
+                str(paths["base"]),
+                str(paths["local"]),
+                str(paths["remote"]),
+                str(root / "merged.mxl"),
+            )
+            session.configure_file_editor(str(editor))
+            conflict = session.initial_result().conflicts[0]
+            resolutions = {str(conflict["token_index"]): {"choice": "local"}}
+
+            with patch("mxl_ui.launch_mxl_editor", return_value=None):
+                first_result, first_path = session.begin_manual_edit(resolutions)
+
+            self.assertTrue(first_result.success)
+            assert first_path is not None
+            original_baseline = session.generated_result_data
+            first_path.write_bytes(make_mxl(["First manual edit"]))
+            first_status = session.reload_manual_edit()
+
+            with patch("mxl_ui.launch_mxl_editor", return_value=None):
+                second_result, second_path = session.begin_manual_edit(resolutions)
+
+            self.assertTrue(second_result.success)
+            self.assertEqual(first_path, second_path)
+            self.assertEqual(original_baseline, session.generated_result_data)
+            self.assertEqual("Local", first_status["changes"][0]["before"])
+            self.assertEqual("First manual edit", first_status["changes"][0]["after"])
+
+            assert second_path is not None
+            second_path.write_bytes(make_mxl(["Second manual edit"]))
+            second_status = session.reload_manual_edit()
+            self.assertEqual("Local", second_status["changes"][0]["before"])
+            self.assertEqual("Second manual edit", second_status["changes"][0]["after"])
+
+            changed_decisions = {
+                str(conflict["token_index"]): {"choice": "remote"}
+            }
+            rejected, rejected_path = session.begin_manual_edit(changed_decisions)
+            self.assertFalse(rejected.success)
+            self.assertIsNone(rejected_path)
+            self.assertIn("Discard manual edits", rejected.reason)
+            self.assertEqual(original_baseline, session.generated_result_data)
+            session.cleanup()
+
+    def test_unchanged_manual_edit_can_close_without_discard_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {}
+            for side, value in (
+                ("base", "Base"),
+                ("local", "Local"),
+                ("remote", "Remote"),
+            ):
+                path = root / f"{side}.mxl"
+                path.write_bytes(make_mxl([value]))
+                paths[side] = path
+            editor = root / "1cv8fv.exe"
+            editor.write_bytes(b"test")
+            session = UiSession.from_paths(
+                str(paths["base"]),
+                str(paths["local"]),
+                str(paths["remote"]),
+                str(root / "merged.mxl"),
+            )
+            session.configure_file_editor(str(editor))
+            conflict = session.initial_result().conflicts[0]
+            resolutions = {str(conflict["token_index"]): {"choice": "local"}}
+
+            with patch("mxl_ui.launch_mxl_editor", return_value=None):
+                result, editable = session.begin_manual_edit(resolutions)
+
+            self.assertTrue(result.success)
+            self.assertIsNotNone(editable)
+            status = session.reload_manual_edit()
+            self.assertFalse(status["changed"])
+            self.assertTrue(session.close_unchanged_manual_edit())
+            self.assertFalse(session.editor_status()["active"])
+            session.cleanup()
 
     def test_model_exposes_individual_row_operation_choices(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -6,19 +6,22 @@ from __future__ import annotations
 import json
 import re
 import secrets
+import shutil
 import subprocess
+import tempfile
 import threading
 import webbrowser
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
 try:
     from tools.mxl_merge.mxl_preview import (
         PreviewBundle,
+        align_semantic_values,
         build_semantic_preview_bundle,
         build_preview_bundle,
         configured_batch_preview_command,
@@ -29,6 +32,7 @@ try:
 except ModuleNotFoundError:
     from mxl_preview import (  # type: ignore[no-redef]
         PreviewBundle,
+        align_semantic_values,
         build_semantic_preview_bundle,
         build_preview_bundle,
         configured_batch_preview_command,
@@ -50,6 +54,7 @@ try:
         resolve_documents,
         semantic_coordinates,
         semantic_entries,
+        semantic_values,
     )
 except ModuleNotFoundError:
     from mxl_tool import (  # type: ignore[no-redef]
@@ -64,6 +69,20 @@ except ModuleNotFoundError:
         resolve_documents,
         semantic_coordinates,
         semantic_entries,
+        semantic_values,
+    )
+
+try:
+    from tools.mxl_merge.mxl_onec import (
+        MxlEditorError,
+        launch_mxl_editor,
+        mxl_editor_available,
+    )
+except ModuleNotFoundError:
+    from mxl_onec import (  # type: ignore[no-redef]
+        MxlEditorError,
+        launch_mxl_editor,
+        mxl_editor_available,
     )
 
 
@@ -87,6 +106,19 @@ class UiSession:
     batch_preview_command: str | None = None
     preview_loading: bool = False
     preview_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    file_editor: str | None = None
+    file_editor_enabled: bool | None = None
+    editor_workspace: Path | None = None
+    edited_result_path: Path | None = None
+    edited_result_data: bytes | None = None
+    generated_result_data: bytes | None = None
+    edited_resolutions_key: str | None = None
+    manual_changes: list[dict[str, object]] = field(default_factory=list)
+    manual_unmapped: bool = False
+    editor_running: bool = False
+    editor_error: str | None = None
+    editor_revision: int = 0
+    editor_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     @classmethod
     def from_paths(
@@ -101,6 +133,254 @@ class UiSession:
 
     def initial_result(self) -> MergeResult:
         return merge_documents(self.base, self.local, self.remote)
+
+    def configure_file_editor(self, file_editor: str | None = None) -> None:
+        self.file_editor = file_editor
+        self.file_editor_enabled = mxl_editor_available(file_editor)
+
+    def file_editor_model(self) -> dict[str, object]:
+        return {
+            "available": (
+                self.file_editor_enabled
+                if self.file_editor_enabled is not None
+                else mxl_editor_available(self.file_editor)
+            ),
+            "active": self.edited_result_path is not None,
+        }
+
+    def _ensure_editor_workspace(self) -> Path:
+        if self.editor_workspace is None:
+            self.editor_workspace = Path(
+                tempfile.mkdtemp(prefix="mxl-merge-editor-")
+            )
+        return self.editor_workspace
+
+    def open_source_copy(self, side: str) -> tuple[Path, subprocess.Popen[bytes] | None]:
+        documents = {
+            "base": self.base,
+            "local": self.local,
+            "remote": self.remote,
+        }
+        if side not in documents:
+            raise ValueError(f"Unknown MXL source: {side}")
+        workspace = self._ensure_editor_workspace()
+        snapshot = workspace / f"{side}-read-only.mxl"
+        atomic_write_bytes(snapshot, documents[side].data)
+        try:
+            snapshot.chmod(0o444)
+        except OSError:
+            pass
+        return snapshot, launch_mxl_editor(snapshot, self.file_editor)
+
+    @staticmethod
+    def _resolutions_key(
+        resolutions: Mapping[str, Mapping[str, object]]
+    ) -> str:
+        return json.dumps(
+            resolutions,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _manual_change_model(
+        self, generated: MxlDocument, edited: MxlDocument
+    ) -> tuple[list[dict[str, object]], bool]:
+        generated_values = semantic_values(generated)
+        edited_values = semantic_values(edited)
+        generated_coordinates = semantic_coordinates(generated)
+        edited_coordinates = semantic_coordinates(edited)
+        alignment = align_semantic_values(
+            generated_values, generated_values, edited_values
+        )
+        changes: list[dict[str, object]] = []
+        for row in alignment.rows:
+            before = row.get("base")
+            after = row.get("remote")
+            if before == after:
+                continue
+            indices = row.get("indices", {})
+            generated_index = (
+                indices.get("base") if isinstance(indices, Mapping) else None
+            )
+            edited_index = (
+                indices.get("remote") if isinstance(indices, Mapping) else None
+            )
+            operation = (
+                "add" if before is None else "delete" if after is None else "edit"
+            )
+            changes.append(
+                {
+                    "operation": operation,
+                    "before": before,
+                    "after": after,
+                    "generated_index": generated_index,
+                    "edited_index": edited_index,
+                    "generated_coordinate": (
+                        generated_coordinates[generated_index]
+                        if isinstance(generated_index, int)
+                        and generated_index < len(generated_coordinates)
+                        else None
+                    ),
+                    "edited_coordinate": (
+                        edited_coordinates[edited_index]
+                        if isinstance(edited_index, int)
+                        and edited_index < len(edited_coordinates)
+                        else None
+                    ),
+                }
+            )
+        # Byte-level differences without semantic changes usually mean manual
+        # formatting or other MXL metadata edits that cannot be tied to a cell.
+        return changes, generated.data != edited.data and not changes
+
+    def begin_manual_edit(
+        self,
+        resolutions: Mapping[str, Mapping[str, object]],
+        on_exit: Callable[[], None] | None = None,
+    ) -> tuple[MergeResult, Path | None]:
+        result = resolve_documents(self.base, self.local, self.remote, resolutions)
+        if not result.success or result.data is None:
+            return result, None
+        document = parse_document(result.data, "<editable-result>")
+        workspace = self._ensure_editor_workspace()
+        editable = workspace / "merged-editable.mxl"
+        key = self._resolutions_key(resolutions)
+        reopening = False
+        with self.editor_lock:
+            if self.editor_running:
+                return (
+                    MergeResult(False, None, "The MXL editor is already running"),
+                    None,
+                )
+            if (
+                self.edited_result_path is not None
+                and self.edited_resolutions_key != key
+            ):
+                return (
+                    MergeResult(
+                        False,
+                        None,
+                        "Discard manual edits before changing merge decisions",
+                    ),
+                    None,
+                )
+            reopening = self.edited_result_path is not None
+            if not reopening:
+                atomic_write_bytes(editable, result.data)
+                self.edited_result_data = result.data
+                # Keep this immutable baseline across every later editor
+                # session so all manual edits remain attributable to the
+                # original merged result.
+                self.generated_result_data = result.data
+                self.edited_resolutions_key = key
+                self.manual_changes = []
+                self.manual_unmapped = False
+                self.editor_revision += 1
+            self.edited_result_path = editable
+            self.editor_error = None
+        del document
+        try:
+            process = launch_mxl_editor(editable, self.file_editor)
+        except MxlEditorError as error:
+            with self.editor_lock:
+                self.editor_running = False
+                self.editor_error = str(error)
+                if not reopening:
+                    self.edited_result_path = None
+                    self.edited_result_data = None
+                    self.generated_result_data = None
+                    self.edited_resolutions_key = None
+            raise
+        with self.editor_lock:
+            self.editor_running = process is not None
+        if process is not None:
+            def wait_for_editor() -> None:
+                process.wait()
+                with self.editor_lock:
+                    self.editor_running = False
+                if on_exit is not None:
+                    on_exit()
+
+            threading.Thread(
+                target=wait_for_editor,
+                name="mxl-file-editor",
+                daemon=True,
+            ).start()
+        return result, editable
+
+    def reload_manual_edit(self) -> dict[str, object]:
+        with self.editor_lock:
+            path = self.edited_result_path
+            generated_data = self.generated_result_data
+        if path is None or generated_data is None:
+            raise ValueError("The merged result is not open for manual editing")
+        data = path.read_bytes()
+        edited = parse_document(data, str(path))
+        generated = parse_document(generated_data, "<generated-result>")
+        changes, unmapped = self._manual_change_model(generated, edited)
+        with self.editor_lock:
+            self.edited_result_data = data
+            self.manual_changes = changes
+            self.manual_unmapped = unmapped
+            self.editor_error = None
+            self.editor_revision += 1
+        return self.editor_status()
+
+    def discard_manual_edits(self) -> None:
+        with self.editor_lock:
+            self.edited_result_path = None
+            self.edited_result_data = None
+            self.generated_result_data = None
+            self.edited_resolutions_key = None
+            self.manual_changes = []
+            self.manual_unmapped = False
+            self.editor_running = False
+            self.editor_error = None
+            self.editor_revision += 1
+
+    def close_unchanged_manual_edit(self) -> bool:
+        with self.editor_lock:
+            if (
+                self.edited_result_path is None
+                or self.editor_running
+                or self.manual_changes
+                or self.manual_unmapped
+            ):
+                return False
+        self.discard_manual_edits()
+        return True
+
+    def editor_status(self) -> dict[str, object]:
+        with self.editor_lock:
+            counts = {
+                operation: sum(
+                    change.get("operation") == operation
+                    for change in self.manual_changes
+                )
+                for operation in ("edit", "add", "delete")
+            }
+            return {
+                "available": (
+                    self.file_editor_enabled
+                    if self.file_editor_enabled is not None
+                    else mxl_editor_available(self.file_editor)
+                ),
+                "active": self.edited_result_path is not None,
+                "running": self.editor_running,
+                "revision": self.editor_revision,
+                "changes": list(self.manual_changes),
+                "counts": counts,
+                "unmapped": self.manual_unmapped,
+                "changed": bool(self.manual_changes or self.manual_unmapped),
+                "error": self.editor_error,
+            }
+
+    def cleanup(self) -> None:
+        workspace = self.editor_workspace
+        self.editor_workspace = None
+        if workspace is not None:
+            shutil.rmtree(workspace, ignore_errors=True)
 
     def prepare_previews(
         self,
@@ -317,6 +597,7 @@ class UiSession:
                 "remote": self.remote.path,
                 "output": str(self.output_path),
             },
+            "fileEditor": self.file_editor_model(),
             "conflicts": conflicts,
             "previews": {
                 "semantic": {
@@ -335,6 +616,13 @@ class UiSession:
         result = resolve_documents(self.base, self.local, self.remote, resolutions)
         if not result.success or result.data is None:
             return result, None
+        with self.editor_lock:
+            if (
+                self.edited_result_path is not None
+                and self.edited_resolutions_key == self._resolutions_key(resolutions)
+                and self.edited_result_data is not None
+            ):
+                result = MergeResult(True, self.edited_result_data, "Manual MXL edits loaded")
         if not self.preview_command and not self.batch_preview_command:
             return result, None
         document = parse_document(result.data, "<merged-preview>")
@@ -345,12 +633,35 @@ class UiSession:
         assert self.preview_command is not None
         return result, render_document_html(document, self.preview_command)
 
+    def render_edited_result(self) -> bytes | None:
+        with self.editor_lock:
+            data = self.edited_result_data
+        if data is None or (not self.preview_command and not self.batch_preview_command):
+            return None
+        document = parse_document(data, "<manually-edited-result>")
+        if self.batch_preview_command:
+            return render_document_html_batch(document, self.batch_preview_command)
+        assert self.preview_command is not None
+        return render_document_html(document, self.preview_command)
+
     def resolve(self, resolutions: Mapping[str, Mapping[str, object]]) -> MergeResult:
         result = resolve_documents(
             self.base, self.local, self.remote, resolutions
         )
         if not result.success or result.data is None:
             return result
+        with self.editor_lock:
+            if self.edited_result_path is not None:
+                if self.edited_resolutions_key != self._resolutions_key(resolutions):
+                    return MergeResult(
+                        False,
+                        None,
+                        "Merge decisions changed after manual editing started",
+                    )
+                assert self.edited_result_data is not None
+                result = MergeResult(
+                    True, self.edited_result_data, "Saved with manual MXL edits"
+                )
 
         # Parse before and after writing so the UI never reports success for a
         # malformed serialization and Git never receives a corrupt output.
@@ -381,6 +692,39 @@ class MxlUiServer(ThreadingHTTPServer):
         self.cancelled = False
         self.result_html: bytes | None = None
         self.result_revision = 0
+        self.result_lock = threading.Lock()
+
+    def refresh_edited_result(self) -> dict[str, object]:
+        try:
+            status = self.session.reload_manual_edit()
+            html = self.session.render_edited_result()
+        except (OSError, MxlFormatError, RuntimeError, ValueError) as error:
+            with self.session.editor_lock:
+                self.session.editor_error = str(error)
+                self.session.editor_revision += 1
+            return self.session.editor_status()
+        if html is not None:
+            with self.result_lock:
+                self.result_html = html
+                self.result_revision += 1
+        status["previewRevision"] = self.result_revision
+        return status
+
+    def finish_edited_result(self) -> dict[str, object]:
+        status = self.refresh_edited_result()
+        if not status.get("error") and self.session.close_unchanged_manual_edit():
+            status = self.session.editor_status()
+            status["previewRevision"] = self.result_revision
+            status["closedUnchanged"] = True
+        return status
+
+    def server_close(self) -> None:
+        try:
+            super().server_close()
+        finally:
+            session = getattr(self, "session", None)
+            if session is not None:
+                session.cleanup()
 
 
 class MxlUiRequestHandler(BaseHTTPRequestHandler):
@@ -410,6 +754,11 @@ class MxlUiRequestHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path == f"/api/{self.server.token}/edit-status":
+            status = self.server.session.editor_status()
+            status["previewRevision"] = self.server.result_revision
+            self._send_json(HTTPStatus.OK, status)
+            return
         if path == f"/api/{self.server.token}/preview-status":
             self._send_json(HTTPStatus.OK, self.server.session.rendered_preview_model())
             return
@@ -417,7 +766,8 @@ class MxlUiRequestHandler(BaseHTTPRequestHandler):
         if path.startswith(preview_prefix):
             side = path.removeprefix(preview_prefix)
             if side == "result":
-                data = self.server.result_html
+                with self.server.result_lock:
+                    data = self.server.result_html
             else:
                 bundle = self.server.session.preview_bundle
                 data = bundle.rendered_html.get(side) if bundle is not None else None
@@ -480,16 +830,90 @@ class MxlUiRequestHandler(BaseHTTPRequestHandler):
             return
 
         is_result_preview = self._authorized_api_path("preview-result")
-        if not is_result_preview and not self._authorized_api_path("resolve"):
+        is_resolve = self._authorized_api_path("resolve")
+        is_open_source = self._authorized_api_path("open-source")
+        is_edit_result = self._authorized_api_path("edit-result")
+        is_reload_edited = self._authorized_api_path("reload-edited")
+        is_discard_edited = self._authorized_api_path("discard-edited")
+        if not any(
+            (
+                is_result_preview,
+                is_resolve,
+                is_open_source,
+                is_edit_result,
+                is_reload_edited,
+                is_discard_edited,
+            )
+        ):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
         payload = self._read_payload()
         if payload is None:
             return
+
+        if is_open_source:
+            side = payload.get("side")
+            if not isinstance(side, str):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid source"})
+                return
+            try:
+                snapshot, _ = self.server.session.open_source_copy(side)
+            except (OSError, RuntimeError, ValueError) as error:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._send_json(
+                HTTPStatus.OK,
+                {"status": "opened", "side": side, "snapshot": str(snapshot)},
+            )
+            return
+
+        if is_reload_edited:
+            status = self.server.refresh_edited_result()
+            if status.get("error"):
+                self._send_json(HTTPStatus.BAD_REQUEST, status)
+            else:
+                self._send_json(HTTPStatus.OK, status)
+            return
+
+        if is_discard_edited:
+            self.server.session.discard_manual_edits()
+            with self.server.result_lock:
+                self.server.result_html = None
+                self.server.result_revision += 1
+            status = self.server.session.editor_status()
+            status["previewRevision"] = self.server.result_revision
+            self._send_json(HTTPStatus.OK, status)
+            return
+
         resolutions = payload.get("resolutions", {})
         if not isinstance(resolutions, dict):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid resolutions"})
+            return
+
+        if is_edit_result:
+            try:
+                result, path = self.server.session.begin_manual_edit(
+                    resolutions, self.server.finish_edited_result
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            if not result.success:
+                self._send_json(
+                    HTTPStatus.CONFLICT,
+                    {"error": result.reason, "conflicts": result.conflicts},
+                )
+                return
+            status = self.server.session.editor_status()
+            status.update(
+                {
+                    "status": "opened",
+                    "path": str(path),
+                    "previewRevision": self.server.result_revision,
+                }
+            )
+            self._send_json(HTTPStatus.OK, status)
             return
 
         if is_result_preview:
@@ -507,14 +931,16 @@ class MxlUiRequestHandler(BaseHTTPRequestHandler):
                     {"status": "semantic-only", "reason": result.reason},
                 )
                 return
-            self.server.result_html = html
-            self.server.result_revision += 1
+            with self.server.result_lock:
+                self.server.result_html = html
+                self.server.result_revision += 1
+                revision = self.server.result_revision
             self._send_json(
                 HTTPStatus.OK,
                 {
                     "status": "rendered",
                     "reason": result.reason,
-                    "revision": self.server.result_revision,
+                    "revision": revision,
                 },
             )
             return
@@ -570,12 +996,14 @@ def create_ui_server(
     port: int = 0,
     preview_command: str | None = None,
     batch_preview_command: str | None = None,
+    file_editor: str | None = None,
 ) -> tuple[MxlUiServer, str]:
     if host not in {"127.0.0.1", "localhost", "::1"}:
         raise ValueError("The MXL merge UI can only bind to a loopback address")
     session.prepare_previews(
         preview_command, batch_preview_command, defer_external=True
     )
+    session.configure_file_editor(file_editor)
     token = secrets.token_urlsafe(24)
     server = MxlUiServer(
         (host, port), session, token, render_ui(session.model(), token)
@@ -597,11 +1025,17 @@ def run_ui(
     open_browser: bool = True,
     preview_command: str | None = None,
     batch_preview_command: str | None = None,
+    file_editor: str | None = None,
 ) -> int:
     try:
         session = UiSession.from_paths(base_path, local_path, remote_path, output_path)
         server, url = create_ui_server(
-            session, host, port, preview_command, batch_preview_command
+            session,
+            host,
+            port,
+            preview_command,
+            batch_preview_command,
+            file_editor,
         )
     except (OSError, MxlFormatError, ValueError) as error:
         print(f"mxl-ui: {error}")
