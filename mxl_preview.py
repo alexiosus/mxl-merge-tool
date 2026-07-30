@@ -19,9 +19,17 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 try:
-    from tools.mxl_merge.mxl_tool import MxlDocument, semantic_values
+    from tools.mxl_merge.mxl_tool import (
+        MxlDocument,
+        coordinate_entry_map,
+        semantic_values,
+    )
 except ModuleNotFoundError:
-    from mxl_tool import MxlDocument, semantic_values  # type: ignore[no-redef]
+    from mxl_tool import (  # type: ignore[no-redef]
+        MxlDocument,
+        coordinate_entry_map,
+        semantic_values,
+    )
 
 
 PREVIEW_ROW_LIMIT = 5_000
@@ -53,7 +61,52 @@ class _SideAlignment:
     insertion_indexes: dict[int, list[int]]
 
 
-def _align_side(base: Sequence[str], side: Sequence[str]) -> _SideAlignment:
+def _side_alignment_from_map(
+    base: Sequence[str], side: Sequence[str], mapping: Mapping[int, int]
+) -> _SideAlignment:
+    """Build an alignment from an exact Base → side index correspondence.
+
+    Values are matched by their row and column, so a cell one side filled no
+    longer shifts the rest of its row onto neighbouring columns the way matching
+    by value sequence does.
+    """
+
+    mapped: dict[int, str | None] = {}
+    mapped_indexes: dict[int, int | None] = {}
+    for base_index in range(len(base)):
+        side_index = mapping.get(base_index)
+        if side_index is None or side_index >= len(side):
+            mapped[base_index] = None
+            mapped_indexes[base_index] = None
+            continue
+        mapped[base_index] = side[side_index]
+        mapped_indexes[base_index] = side_index
+
+    # Whatever the side holds that no Base value claims is an insertion; anchor
+    # it after the last Base value mapped ahead of it so it lands in place.
+    claimed = set(mapping.values())
+    anchors = sorted(mapping.items(), key=lambda item: item[1])
+    insertions: dict[int, list[str]] = {}
+    insertion_indexes: dict[int, list[int]] = {}
+    for side_index in range(len(side)):
+        if side_index in claimed:
+            continue
+        anchor = 0
+        for base_index, mapped_side in anchors:
+            if mapped_side < side_index:
+                anchor = base_index + 1
+            else:
+                break
+        insertions.setdefault(anchor, []).append(side[side_index])
+        insertion_indexes.setdefault(anchor, []).append(side_index)
+    return _SideAlignment(mapped, insertions, mapped_indexes, insertion_indexes)
+
+
+def _align_side(
+    base: Sequence[str], side: Sequence[str], mapping: Mapping[int, int] | None = None
+) -> _SideAlignment:
+    if mapping is not None:
+        return _side_alignment_from_map(base, side, mapping)
     mapped: dict[int, str | None] = {}
     insertions: dict[int, list[str]] = {}
     mapped_indexes: dict[int, int | None] = {}
@@ -123,10 +176,14 @@ def _row_state(base: str | None, local: str | None, remote: str | None) -> str:
 
 
 def align_semantic_values(
-    base: Sequence[str], local: Sequence[str], remote: Sequence[str]
+    base: Sequence[str],
+    local: Sequence[str],
+    remote: Sequence[str],
+    local_map: Mapping[int, int] | None = None,
+    remote_map: Mapping[int, int] | None = None,
 ) -> SemanticAlignment:
-    local_alignment = _align_side(base, local)
-    remote_alignment = _align_side(base, remote)
+    local_alignment = _align_side(base, local, local_map)
+    remote_alignment = _align_side(base, remote, remote_map)
     rows: list[dict[str, object]] = []
     stats: dict[str, int] = {}
 
@@ -380,10 +437,13 @@ def render_document_html_batch(
 def build_semantic_preview_bundle(
     documents: Mapping[str, MxlDocument],
 ) -> PreviewBundle:
+    base_document = documents["base"]
     semantic = align_semantic_values(
-        semantic_values(documents["base"]),
+        semantic_values(base_document),
         semantic_values(documents["local"]),
         semantic_values(documents["remote"]),
+        coordinate_entry_map(base_document, documents["local"]),
+        coordinate_entry_map(base_document, documents["remote"]),
     )
     return PreviewBundle(semantic, {}, None, {})
 

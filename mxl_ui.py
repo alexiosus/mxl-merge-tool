@@ -460,8 +460,16 @@ class UiSession:
         conflict_keys = {
             str(conflict["token_index"])
             for conflict in result.conflicts
-            if conflict["kind"] == "value"
+            if conflict["kind"] == "value" and conflict.get("token_index") is not None
         }
+        # A cell Base never had has no token to hang a field on, so its conflict
+        # is matched to the preview row by the coordinate it occupies instead.
+        cell_conflict_by_coordinate: dict[str, str] = {}
+        for conflict in result.conflicts:
+            cell = conflict.get("cell") if conflict["kind"] == "value" else None
+            if isinstance(cell, Mapping):
+                coordinate = f"R{int(cell['row']) + 1}C{int(cell['column']) + 1}"
+                cell_conflict_by_coordinate[coordinate] = str(conflict["key"])
         row_conflict_by_anchor: dict[str, dict[int, str]] = {
             "base": {},
             "local": {},
@@ -508,6 +516,20 @@ class UiSession:
                 row["row_conflict_key"] = row_conflict_key
                 row["conflict_key"] = row_conflict_key
                 fields_by_conflict.setdefault(row_conflict_key, []).append(field_id)
+            if row.get("base") is None and cell_conflict_by_coordinate:
+                coordinates = row["coordinates"]
+                cell_key = next(
+                    (
+                        cell_conflict_by_coordinate[coordinate]
+                        for side in ("local", "remote")
+                        if (coordinate := coordinates.get(side))
+                        in cell_conflict_by_coordinate
+                    ),
+                    None,
+                )
+                if cell_key is not None:
+                    row["conflict_key"] = cell_key
+                    fields_by_conflict.setdefault(cell_key, []).append(field_id)
             anchor = row.get("anchor")
             if (
                 row.get("base") is not None
@@ -579,7 +601,9 @@ class UiSession:
             elif conflict["kind"] == "row":
                 item["key"] = str(conflict["key"])
             else:
-                item["key"] = str(conflict["token_index"])
+                # A cell Base never had carries no token to key on and brings its
+                # own coordinate key instead.
+                item["key"] = str(conflict.get("key") or conflict["token_index"])
             item["manual_allowed"] = conflict.get("token_type") in {"string", "atom"}
             attach_field_metadata(item)
             conflicts.append(item)

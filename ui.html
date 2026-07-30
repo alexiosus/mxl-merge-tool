@@ -850,6 +850,69 @@
       return segments;
     }
 
+    // Column geometry for the reference row. Anchors are located by cell text,
+    // so a caption that repeats across the sheet — "Company", "Presentation
+    // currency" — can attach a column to a cell in another row or sub-table,
+    // and the column ruler then reads a position from a row it is not
+    // describing. Keep only the anchors that sit in the reference row itself
+    // and take whatever columns they missed from that row's own cells: inside
+    // one row the cells are the columns, in order.
+    function referenceColumnGroups(referenceRow, hoveredTable = null) {
+      const groups = new Map();
+      const items = referenceRow?.items || [];
+      if (!items.length) return groups;
+      const hosts = new Map();
+      items.forEach(item => {
+        const host = item.anchor.element.closest("tr");
+        if (host) hosts.set(host, (hosts.get(host) || 0) + 1);
+      });
+      const host = [...hosts.entries()].sort((left, right) => right[1] - left[1])[0]?.[0];
+      if (!host) return groups;
+
+      const own = items.filter(item => item.anchor.element.closest("tr") === host);
+      const columnByCell = new Map();
+      own.forEach(({anchor, rect}) => {
+        const cell = anchor.element.closest("td, th") || anchor.element;
+        columnByCell.set(cell, anchor.column);
+        if (!groups.has(anchor.column)) groups.set(anchor.column, []);
+        groups.get(anchor.column).push({start: rect.left, end: rect.right});
+      });
+
+      // Within a row the cells are the columns in order, so one trusted anchor
+      // fixes them all. Only adopt that numbering when every anchor of the row
+      // agrees with it — otherwise the anchors are too scrambled to trust and
+      // the sparse geometry above stays as it is.
+      const cells = [...host.cells];
+      const known = cells
+        .map((cell, index) => ({index, column: columnByCell.get(cell)}))
+        .filter(entry => entry.column !== undefined);
+      if (known.length < 2) return groups;
+      const offset = known[0].column - known[0].index;
+      if (known.some(entry => entry.column - entry.index !== offset)) return groups;
+
+      // Every rendered row shares the sheet's column space — only the widths
+      // differ per sub-table — so the offset learned here also numbers a table
+      // whose own cells matched no text and therefore carry no anchors.
+      let describing = host;
+      if (hoveredTable && hoveredTable.isConnected && !hoveredTable.contains(host)) {
+        const candidate = [...hoveredTable.rows]
+          .filter(row => row.getBoundingClientRect().height > 0 && row.cells.length > 1)
+          .sort((left, right) => right.cells.length - left.cells.length)[0];
+        if (candidate) describing = candidate;
+      }
+
+      groups.clear();
+      [...describing.cells].forEach((cell, index) => {
+        const rect = cell.getBoundingClientRect();
+        if (!rect.width) return;
+        const column = offset + index;
+        if (column < 1) return;
+        if (!groups.has(column)) groups.set(column, []);
+        groups.get(column).push({start: rect.left, end: rect.right});
+      });
+      return groups;
+    }
+
     function renderFrameCoordinateRulers(frame) {
       const shell = frame.closest(".frame-coordinate-shell");
       const columnsNode = shell?.querySelector(".frame-coordinate-columns");
@@ -881,25 +944,30 @@
           activeColumns.add(anchor.column);
         }
       });
+      // The pointer picks which sub-table the ruler describes; without it the
+      // topmost widest visible row wins, as before.
+      const hoveredTable = frame._mxlHoveredTable?.isConnected
+        ? frame._mxlHoveredTable
+        : null;
       const referenceRow = [...geometryByRow.entries()]
         .map(([row, items]) => ({
           row,
           items,
           columnCount: new Set(items.map(item => item.anchor.column)).size,
+          hovered: Boolean(hoveredTable) && items.some(
+            item => item.anchor.element.closest("table") === hoveredTable
+          ),
           visible: items.some(item => item.rowRect.bottom > 0 && item.rowRect.top < viewportHeight),
           distance: Math.min(...items.map(item => Math.abs(item.rowRect.top)))
         }))
         .sort((left, right) =>
+          Number(right.hovered) - Number(left.hovered) ||
           Number(right.visible) - Number(left.visible) ||
           right.columnCount - left.columnCount ||
           left.distance - right.distance ||
           left.row - right.row
         )[0] || null;
-      const columnGroups = new Map();
-      (referenceRow?.items || []).forEach(({anchor, rect}) => {
-        if (!columnGroups.has(anchor.column)) columnGroups.set(anchor.column, []);
-        columnGroups.get(anchor.column).push({start: rect.left, end: rect.right});
-      });
+      const columnGroups = referenceColumnGroups(referenceRow, hoveredTable);
       const placeholderBands = Array.from(
         doc.querySelectorAll(".mxl-row-placeholder, .mxl-row-placeholder-block")
       ).map(marker => {
@@ -993,14 +1061,39 @@
         .forEach(scheduleFrameCoordinateRulers);
     }
 
+    // A composed structure belongs to no single side, so numbering its rows from
+    // one side's coordinates labels rows that the composition removed and skips
+    // the ones it added — the ruler ends up with more labels than rows and they
+    // pile up. The composed sheet is the final document, so its rows simply run
+    // in document order.
+    function renumberAnchorsByRenderedOrder(doc, anchors) {
+      const order = new Map();
+      [...doc.querySelectorAll("tr")]
+        .filter(node =>
+          !node.classList.contains("mxl-row-placeholder") &&
+          !node.classList.contains("mxl-row-placeholder-block") &&
+          !node.classList.contains("mxl-row-provisional-hidden"))
+        .forEach((node, index) => order.set(node, index + 1));
+      return anchors
+        .map(anchor => {
+          const position = order.get(anchor.element.closest("tr"));
+          return position === undefined ? null : {...anchor, row: position};
+        })
+        .filter(Boolean);
+    }
+
     function installFrameCoordinateRulers(
       frame,
       side,
       elements,
-      valueResolver = row => row[side]
+      valueResolver = row => row[side],
+      positionalRows = false
     ) {
       frame.dataset.coordinateSide = side;
-      frame._mxlCoordinateAnchors = coordinateAnchors(elements, side, valueResolver);
+      const anchors = coordinateAnchors(elements, side, valueResolver);
+      frame._mxlCoordinateAnchors = positionalRows
+        ? renumberAnchorsByRenderedOrder(frame.contentDocument, anchors)
+        : anchors;
       const frameWindow = frame.contentWindow;
       const frameDocument = frame.contentDocument;
       if (frame._mxlCoordinateDocument !== frameDocument) {
@@ -1019,6 +1112,20 @@
           capture: true,
           passive: true
         });
+        // A 1C sheet is split into sub-tables that can each have their own
+        // column widths, so one ruler cannot describe all of them at once. Bind
+        // it to the table under the pointer and redraw only when that changes.
+        frameDocument.addEventListener("mousemove", event => {
+          const table = event.target?.closest?.("table") || null;
+          if (frame._mxlHoveredTable === table) return;
+          frame._mxlHoveredTable = table;
+          scheduleFrameCoordinateRulers(frame);
+        }, {capture: true, passive: true});
+        frameDocument.addEventListener("mouseleave", () => {
+          if (!frame._mxlHoveredTable) return;
+          frame._mxlHoveredTable = null;
+          scheduleFrameCoordinateRulers(frame);
+        }, {capture: true, passive: true});
       }
       scheduleFrameCoordinateRulers(frame);
     }
@@ -1400,6 +1507,11 @@
       const conflicts = model.conflicts.filter(conflict => conflict.kind === "row");
       if (!conflicts.length || !doc.body) return;
       if (displaySide === "result" && wholeDocumentChoice()) return;
+      // A move region is a single decision, so an unresolved one gets a single
+      // band rather than a placeholder per member row: the conflict list and
+      // the ‹ › navigation already treat the region as one unit, and per-row
+      // bands also mix two numbering systems in their labels.
+      const bandedGroups = new Set();
       conflicts.forEach(conflict => {
         // The provisional draft leaves structural regions as borrowed 1C
         // content, so it must not scatter per-row placeholders/imports there.
@@ -1424,28 +1536,53 @@
           choice !== "manual" &&
           conflict.states?.[lookupSide] === "absent";
         if (!unresolvedResult && !restored && state !== "absent") return;
+        const regionRange = unresolvedResult && conflict.move_group
+          ? conflict.move_group_range
+          : null;
+        if (unresolvedResult && conflict.move_group) {
+          if (bandedGroups.has(conflict.move_group)) return;
+          bandedGroups.add(conflict.move_group);
+        }
+        const regionRows = conflict.move_group
+          ? conflicts
+              .filter(other => other.move_group === conflict.move_group)
+              .flatMap(other =>
+                (other.field_ids || []).map(
+                  fieldId => resultElements.get(fieldId)?.closest("tr")
+                )
+              )
+              .filter(Boolean)
+          : [];
         const automaticRowChange = conflict.requires_choice === false;
         const visualState = restored ? choice : rowChangeVisualState(conflict);
         const boundary = findConflictBoundaryElement(elements, conflict, lookupSide);
         // A row the layout still carries but the resolution drops must go, or
         // the draft shows an empty ghost line next to the deletion marker.
         const representedRow = unresolvedResult || (displaySide === "result" && state === "absent")
-          ? (conflict.field_ids || [])
+          ? (regionRange ? regionRows[0] : null) ||
+            (conflict.field_ids || [])
               .map(fieldId => resultElements.get(fieldId)?.closest("tr"))
               .find(Boolean)
           : null;
         const tableRow = (restored ? null : representedRow) || boundary.element?.closest("tr");
-        const message = unresolvedResult
+        const message = regionRange
+          ? `Rows ${regionRange[0]}–${regionRange[1]} reordered — choose Base, Local, or Remote`
+          : unresolvedResult
           ? `Row ${conflict.row_number ?? ""} unresolved — choose Base, Local, or Remote`
           : restored
             ? `Row ${conflict.row_number ?? ""} kept from ${choice[0].toUpperCase()}${choice.slice(1)}`
             : automaticRowChange
               ? `Row ${conflict.row_number ?? ""} absent — automatic ${conflict.default_choice} row change`
               : `Row ${conflict.row_number ?? ""} deleted — choose Base, Local, or Remote`;
-        const rowCoordinate = rowPositionCoordinate(
-          conflict,
-          choice && choice !== "manual" ? choice : lookupSide
-        );
+        // The region band already names its span, and a single row coordinate
+        // there would contradict it: the prefix is the displayed side's number
+        // while the span is in Base numbering.
+        const rowCoordinate = regionRange
+          ? null
+          : rowPositionCoordinate(
+              conflict,
+              choice && choice !== "manual" ? choice : lookupSide
+            );
         const coordinateMessage = rowCoordinate
           ? `${rowCoordinate} · ${message}`
           : message;
@@ -1481,6 +1618,12 @@
           if (representedRow) {
             representedRow.before(marker);
             representedRow.classList.add("mxl-row-provisional-hidden");
+            // One band stands for the whole region, so every member row hides.
+            if (regionRange) {
+              regionRows.forEach(node =>
+                node.classList.add("mxl-row-provisional-hidden")
+              );
+            }
           } else if (boundary.after) {
             tableRow.after(marker);
           } else {
@@ -2332,7 +2475,9 @@
         frame,
         source,
         elements,
-        row => resolvedRowValue(row).value
+        row => resolvedRowValue(row).value,
+        // A mixed structure has no side to take row numbers from.
+        selectedRowStructureSource() === ""
       );
       applyFrameViewState(doc);
       highlightActiveConflict(conflictByKey[activeConflictKey]);

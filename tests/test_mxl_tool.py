@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import mxl_tool
+
 from mxl_tool import (
     MAGIC,
     MXL_ATTRIBUTES_LINE,
@@ -57,6 +59,43 @@ def make_row_record_mxl(rows: list[tuple[int, str]]) -> bytes:
     return PREFIX + ("{" + ",".join((*records, "99", "0")) + "}").encode("utf-8")
 
 
+def make_grid_mxl(rows: list[tuple[int, list[str | None]]]) -> bytes:
+    """Rows of explicit cells, where None is an empty cell.
+
+    Unlike make_row_record_mxl this keeps empty cells in the record, which is
+    what real sheets contain and what makes a cell's column — rather than its
+    position among the non-empty values — the only usable identity.
+    """
+
+    records = []
+    for coordinate, values in rows:
+        cells: list[str] = []
+        for column, value in enumerate(values):
+            if column:
+                cells.append(str(column))
+            if value is None:
+                cells.append("{1,0}")
+            else:
+                escaped = value.replace(chr(34), chr(34) * 2)
+                cells.append(f'{{1,1,{{"#","{escaped}"}}}}')
+        records.extend((str(coordinate), "0", str(len(values)), "0", *cells))
+    return PREFIX + ("{" + ",".join((*records, "99", "0")) + "}").encode("utf-8")
+
+
+def row_cell_values(document, coordinate: int) -> list[str | None]:
+    """Visible values of one row by column, with None for empty cells."""
+
+    row = next(
+        item for item in mxl_tool._row_layout(document).rows if item.coordinate == coordinate
+    )
+    cells = mxl_tool._row_cells(document, row)
+    result: list[str | None] = []
+    for column in sorted(cells):
+        token_index = mxl_tool._cell_value_token_index(document, cells[column])
+        result.append(None if token_index is None else document.tokens[token_index].value)
+    return result
+
+
 def make_row_record_mxl_with_metadata(
     rows: list[tuple[int, str]],
     *,
@@ -64,6 +103,7 @@ def make_row_record_mxl_with_metadata(
     ranges: list[tuple[int, int]],
     grouped_row: int,
     named_row: int,
+    property_filler: bool = True,
 ) -> bytes:
     records = []
     for coordinate, value in rows:
@@ -88,8 +128,9 @@ def make_row_record_mxl_with_metadata(
         "{0}",
         "{0}",
         *property_values,
-        "0",
-        "0",
+        # Sheets written by 1C carry these two fields after a non-empty row
+        # property list and omit them when there are no row properties.
+        *(("0", "0") if property_filler else ()),
         *range_values,
         "0",
         "0",
@@ -568,6 +609,136 @@ class MxlToolTests(unittest.TestCase):
             semantic_values(parse_document(result.data)),
         )
 
+    @staticmethod
+    def _cell_trio(base_row, local_row, remote_row):
+        header = (0, ["h1", "h2", "h3", "h4"])
+        # The third row keeps the merge in row mode, the way a real sheet is.
+        spare = (2, ["Other", "x", None, "No"])
+        return (
+            parse_document(make_grid_mxl([header, (1, base_row), spare])),
+            parse_document(make_grid_mxl([header, (1, local_row)])),
+            parse_document(make_grid_mxl([header, (1, remote_row), spare])),
+        )
+
+    def test_clearing_a_cell_against_an_edit_is_a_conflict(self):
+        # Local clears C3, Remote edits it. A side's missing value used to read
+        # as "unchanged", so neither change was reported and the result silently
+        # followed whichever row structure happened to be chosen.
+        base, local, remote = self._cell_trio(
+            ["I", "op", "V", "No"], ["I", "op", None, "No"], ["I", "op", "V2", "No"]
+        )
+        conflicts = merge_documents(base, local, remote).conflicts
+        value_conflicts = [c for c in conflicts if c["kind"] == "value"]
+        self.assertEqual(1, len(value_conflicts), value_conflicts)
+        conflict = value_conflicts[0]
+        self.assertEqual("V", conflict["base"])
+        self.assertEqual("", conflict["local"])
+        self.assertEqual("V2", conflict["remote"])
+
+        for choice, expected in (("local", None), ("remote", "V2")):
+            resolutions = {}
+            for item in conflicts:
+                key = (
+                    str(item["token_index"])
+                    if item["kind"] == "value"
+                    else str(item["key"])
+                )
+                resolutions[key] = {"choice": choice}
+            result = resolve_documents(base, local, remote, resolutions)
+            self.assertTrue(result.success, result.reason)
+            assert result.data is not None
+            self.assertEqual(
+                ["I", "op", expected, "No"],
+                row_cell_values(parse_document(result.data), 1),
+                choice,
+            )
+
+    def test_both_sides_filling_the_same_empty_cell_is_a_conflict(self):
+        # Base leaves C3 empty and the sides put different values in it. Walking
+        # only Base's values made the cell invisible, so no conflict was raised.
+        base, local, remote = self._cell_trio(
+            ["I", "op", None, "No"], ["I", "op", "L", "No"], ["I", "op", "R", "No"]
+        )
+        conflicts = merge_documents(base, local, remote).conflicts
+        value_conflicts = [c for c in conflicts if c["kind"] == "value"]
+        self.assertEqual(1, len(value_conflicts), value_conflicts)
+        self.assertEqual("", value_conflicts[0]["base"])
+        self.assertEqual("L", value_conflicts[0]["local"])
+        self.assertEqual("R", value_conflicts[0]["remote"])
+
+        for choice, expected in (("local", "L"), ("remote", "R")):
+            resolutions = {}
+            for item in conflicts:
+                key = (
+                    str(item["token_index"])
+                    if item["kind"] == "value" and item.get("token_index") is not None
+                    else str(item["key"])
+                )
+                resolutions[key] = {"choice": choice}
+            result = resolve_documents(base, local, remote, resolutions)
+            self.assertTrue(result.success, result.reason)
+            assert result.data is not None
+            self.assertEqual(
+                ["I", "op", expected, "No"],
+                row_cell_values(parse_document(result.data), 1),
+                choice,
+            )
+
+    def test_mixed_row_composition_without_row_property_fields(self):
+        # A sheet with no row properties writes its range count straight after
+        # the property count, with none of the two filler fields that follow a
+        # non-empty property list. Assuming the filler is always there made
+        # every mixed row composition on such a file fail outright with "The
+        # MXL row metadata layout is not recognized", blocking Render exact and
+        # Save.
+        def build(rows, ranges, grouped_row, named_row):
+            return parse_document(
+                make_row_record_mxl_with_metadata(
+                    rows,
+                    properties=[],
+                    ranges=ranges,
+                    grouped_row=grouped_row,
+                    named_row=named_row,
+                    property_filler=False,
+                )
+            )
+
+        base = build(
+            [(0, "A"), (1, "B"), (2, "C"), (3, "D"), (4, "E")], [(0, 1), (2, 4)], 3, 4
+        )
+        local = build(
+            [(0, "A"), (1, "B local"), (2, "C"), (3, "D"), (4, "E")], [(0, 1), (2, 4)], 3, 4
+        )
+        remote = build([(0, "A"), (1, "C"), (2, "E"), (3, "D")], [(0, 0), (1, 3)], 2, 3)
+
+        conflicts = merge_documents(base, local, remote).conflicts
+        required = next(
+            conflict
+            for conflict in conflicts
+            if conflict["kind"] == "row" and conflict["requires_choice"]
+        )
+        moved = next(
+            conflict
+            for conflict in conflicts
+            if conflict["kind"] == "row" and conflict["operation"] == "move"
+        )
+        result = resolve_documents(
+            base,
+            local,
+            remote,
+            {
+                str(required["key"]): {"choice": "local"},
+                str(moved["key"]): {"choice": "remote"},
+            },
+        )
+
+        self.assertTrue(result.success, result.reason)
+        assert result.data is not None
+        merged = parse_document(result.data)
+        layout = _row_layout(merged)
+        assert layout is not None
+        self.assertIsNotNone(_row_metadata_sections(merged, layout))
+
     def test_mixed_row_composition_updates_coordinate_metadata(self):
         base = parse_document(
             make_row_record_mxl_with_metadata(
@@ -964,6 +1135,84 @@ class IndependentMoveGroupTests(unittest.TestCase):
         values = semantic_values(parse_document(result.data))
         # Whatever order the choice produces, no row may vanish or be duplicated.
         self.assertEqual(sorted(values), sorted(["A", "B", "C", "D!"]))
+
+    def test_filled_empty_cell_does_not_shift_the_rest_of_its_row(self):
+        # Only non-empty cells carry a value, so aligning a row by the sequence
+        # of its values made a cell one side filled shift every later cell into
+        # a neighbouring column. Base C3 is empty and C4 is "No"; Local fills C3
+        # with "No" and sets C4 to "Yes"; Remote also sets C4 to "Yes". Comparing
+        # by position matched Base C4 against Local C3 and Remote C4 as one
+        # cell, reported no conflict, and wrote Remote's "Yes" over the value
+        # Local had just added.
+        base = parse_document(make_grid_mxl([
+            (0, ["h1", "h2", "h3", "h4"]),
+            (1, ["Item", "op", None, "No"]),
+            (2, ["Other", "x", None, "No"]),
+        ]))
+        local = parse_document(make_grid_mxl([
+            (0, ["h1", "h2", "h3", "h4"]),
+            (1, ["Item", "op", "No", "Yes"]),
+        ]))
+        remote = parse_document(make_grid_mxl([
+            (0, ["h1", "h2", "h3", "h4"]),
+            (1, ["Item", "op", None, "Yes"]),
+            (2, ["Other", "x", None, "No"]),
+        ]))
+
+        conflicts = merge_documents(base, local, remote).conflicts
+        resolutions = {}
+        for conflict in conflicts:
+            key = (
+                str(conflict["token_index"])
+                if conflict["kind"] == "value"
+                else str(conflict["key"])
+            )
+            resolutions[key] = {"choice": "local"}
+        result = resolve_documents(base, local, remote, resolutions)
+        self.assertTrue(result.success, result.reason)
+        assert result.data is not None
+        # C3 keeps the value only Local set; C4 is "Yes", which both sides agree on.
+        self.assertEqual(
+            ["Item", "op", "No", "Yes"],
+            row_cell_values(parse_document(result.data), 1),
+        )
+
+    def test_added_cell_value_survives_choosing_the_other_row_structure(self):
+        # Local fills C3, which is empty in Base and stays empty in Remote.
+        # Choosing Remote's row structure must still merge that one-sided value
+        # change; the merge walks Base's values, so a cell Base never had used
+        # to be dropped whenever the chosen side did not already carry it.
+        base = parse_document(make_grid_mxl([
+            (0, ["h1", "h2", "h3", "h4"]),
+            (1, ["Item", "op", None, "No"]),
+            (2, ["Other", "x", None, "No"]),
+        ]))
+        local = parse_document(make_grid_mxl([
+            (0, ["h1", "h2", "h3", "h4"]),
+            (1, ["Item", "op", "No", "Yes"]),
+        ]))
+        remote = parse_document(make_grid_mxl([
+            (0, ["h1", "h2", "h3", "h4"]),
+            (1, ["Item", "op", None, "Yes"]),
+            (2, ["Other", "x", None, "No"]),
+        ]))
+
+        conflicts = merge_documents(base, local, remote).conflicts
+        resolutions = {}
+        for conflict in conflicts:
+            key = (
+                str(conflict["token_index"])
+                if conflict["kind"] == "value"
+                else str(conflict["key"])
+            )
+            resolutions[key] = {"choice": "remote"}
+        result = resolve_documents(base, local, remote, resolutions)
+        self.assertTrue(result.success, result.reason)
+        assert result.data is not None
+        self.assertEqual(
+            ["Item", "op", "No", "Yes"],
+            row_cell_values(parse_document(result.data), 1),
+        )
 
     def test_move_region_absorbs_in_span_additions_and_deletions(self):
         # Real three-way sample where Remote reordered a block while both sides

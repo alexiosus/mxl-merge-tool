@@ -338,6 +338,23 @@ def _replace_tokens(document: MxlDocument, replacements: dict[int, str]) -> byte
     return document.prefix + text.encode("utf-8")
 
 
+def _replace_token_ranges(
+    document: MxlDocument, replacements: Mapping[tuple[int, int], str]
+) -> bytes:
+    """Rewrite half-open token ranges, so a whole node can be swapped out.
+
+    Filling an empty cell replaces its ``{1,0}`` placeholder node rather than a
+    single token, which _replace_tokens cannot express.
+    """
+
+    text = document.text
+    for start_token, end_token in sorted(replacements, reverse=True):
+        start = document.tokens[start_token].start
+        end = document.tokens[end_token - 1].end
+        text = text[:start] + replacements[(start_token, end_token)] + text[end:]
+    return document.prefix + text.encode("utf-8")
+
+
 def _display_token(token: Token) -> str:
     if token.kind == "string":
         return token.value
@@ -976,18 +993,321 @@ def _align_entry_indexes(base: Sequence[str], side: Sequence[str]) -> dict[int, 
     return mapping
 
 
+def _cell_value_token_index(document: MxlDocument, cell: StructureNode) -> int | None:
+    """The token holding a cell's visible value, or None for an empty cell."""
+
+    tokens = document.tokens
+    for index in range(cell.start, max(cell.start, cell.end - 4)):
+        window = tokens[index : index + 5]
+        if (
+            window[0].value == "{"
+            and window[1].kind == "string"
+            and window[1].value == "#"
+            and window[2].value == ","
+            and window[3].kind == "string"
+            and window[4].value == "}"
+        ):
+            return index + 3
+    return None
+
+
+def _row_value_tokens(document: MxlDocument, row: RowItem) -> dict[int, int]:
+    """Column index → that cell's value token, skipping empty cells.
+
+    A row record stores every cell, but only a filled one carries a value. The
+    record's own column indexes are therefore the only reliable identity: two
+    rows cannot be compared by the sequence of their non-empty values, because a
+    cell one side filled shifts every later cell of that row into a different
+    column.
+    """
+
+    tokens: dict[int, int] = {}
+    for column, cell in _row_cells(document, row).items():
+        token_index = _cell_value_token_index(document, cell)
+        if token_index is not None:
+            tokens[column] = token_index
+    return tokens
+
+
+def _coordinate_entry_map(
+    base: MxlDocument,
+    side: MxlDocument,
+    base_entries: Sequence[tuple[int, str]],
+    side_entries: Sequence[tuple[int, str]],
+) -> dict[int, int] | None:
+    """Map Base entries onto a side's entries by row and column.
+
+    Returns None when the documents are not plain row records or when some value
+    sits outside any row; those cases keep the sequence alignment, which is the
+    only option without coordinates.
+    """
+
+    base_layout = _row_layout(base)
+    side_layout = _row_layout(side)
+    if base_layout is None or side_layout is None:
+        return None
+    # Only the record layout stores per-column cells; the direct layout has no
+    # column indexes to align by.
+    if base_layout.kind != "records" or side_layout.kind != "records":
+        return None
+
+    base_cells_by_row = [_row_value_tokens(base, row) for row in base_layout.rows]
+    side_cells_by_row = [_row_value_tokens(side, row) for row in side_layout.rows]
+    inside_rows = {token for cells in base_cells_by_row for token in cells.values()}
+    if any(token not in inside_rows for token, _ in base_entries):
+        return None
+
+    base_positions = {token: index for index, (token, _) in enumerate(base_entries)}
+    side_positions = {token: index for index, (token, _) in enumerate(side_entries)}
+    alignment = _align_rows(base_layout, side_layout)
+    mapping: dict[int, int] = {}
+    for base_row_index, side_row_index in alignment.base_to_side.items():
+        if base_row_index >= len(base_cells_by_row):
+            continue
+        if side_row_index >= len(side_cells_by_row):
+            continue
+        side_cells = side_cells_by_row[side_row_index]
+        for column, base_token in base_cells_by_row[base_row_index].items():
+            side_token = side_cells.get(column)
+            if side_token is None:
+                continue
+            base_index = base_positions.get(base_token)
+            side_index = side_positions.get(side_token)
+            if base_index is not None and side_index is not None:
+                mapping[base_index] = side_index
+    return mapping
+
+
+def _empty_value_container(document: MxlDocument, cell: StructureNode) -> StructureNode | None:
+    """The ``{1,0}`` node a cell carries in place of a missing value."""
+
+    stack = [cell]
+    while stack:
+        node = stack.pop()
+        if len(node.children) == 2 and all(
+            _integer_child(document, child) == expected
+            for child, expected in zip(node.children, (1, 0))
+        ):
+            return node
+        stack.extend(child for child in node.children if isinstance(child, StructureNode))
+    return None
+
+
+def _cell_value_container(document: MxlDocument, cell: StructureNode) -> StructureNode | None:
+    """The ``{1,1,{"#",…}}`` node holding a cell's value, so it can be cleared."""
+
+    stack = [cell]
+    while stack:
+        node = stack.pop()
+        children = node.children
+        if (
+            len(children) == 3
+            and _integer_child(document, children[0]) == 1
+            and _integer_child(document, children[1]) == 1
+            and isinstance(children[2], StructureNode)
+        ):
+            return node
+        stack.extend(child for child in children if isinstance(child, StructureNode))
+    return None
+
+
+def _cell_level_updates(
+    base: MxlDocument,
+    local: MxlDocument,
+    remote: MxlDocument,
+    source: MxlDocument,
+    resolutions: Mapping[str, Resolution],
+) -> tuple[dict[tuple[int, int], str], set[int], list[dict[str, object]]]:
+    """Cell decisions the value loop cannot express.
+
+    It walks Base's values, so a cell Base never had is invisible to it, and it
+    replaces one token, so it cannot clear a cell either. Returns the token
+    ranges to rewrite, the Base tokens this pass owns so the loop leaves them
+    alone, and any cell whose sides disagree without a resolution.
+    """
+
+    ranges: dict[tuple[int, int], str] = {}
+    owned: set[int] = set()
+    unresolved: list[dict[str, object]] = []
+    records = _aligned_row_cells(base, local, remote)
+    if records is None:
+        return ranges, owned, unresolved
+
+    source_layout = _row_layout(source)
+    base_layout = _row_layout(base)
+    if source_layout is None or base_layout is None or source_layout.kind != "records":
+        return ranges, owned, unresolved
+    to_source = _align_rows(base_layout, source_layout).base_to_side
+
+    for record in records:
+        local_value = record["local"]
+        remote_value = record["remote"]
+        if local_value is None or remote_value is None:
+            continue
+        base_token = record["base_token"]
+        base_value = "" if base_token is None else base.tokens[base_token].value
+
+        if local_value == remote_value:
+            merged = local_value
+        elif local_value == base_value:
+            merged = remote_value
+        elif remote_value == base_value:
+            merged = local_value
+        else:
+            key = (
+                str(base_token)
+                if base_token is not None
+                else f"cell:{record['base_row']}:{record['column']}"
+            )
+            resolution = resolutions.get(key)
+            choice = resolution.get("choice") if resolution else None
+            if choice == "manual":
+                merged = str(resolution.get("value", ""))
+            elif choice in {"base", "local", "remote"}:
+                merged = {"base": base_value, "local": local_value, "remote": remote_value}[
+                    str(choice)
+                ]
+            else:
+                unresolved.append(
+                    {
+                        "kind": "value",
+                        "token_index": base_token,
+                        "key": key,
+                        "base": base_value,
+                        "local": local_value,
+                        "remote": remote_value,
+                    }
+                )
+                continue
+
+        # Only cells the value loop cannot handle are rewritten here.
+        if base_token is not None and merged != "":
+            continue
+        source_index = to_source.get(record["base_row"])
+        if source_index is None:
+            continue
+        source_cells = _row_cells(source, source_layout.rows[source_index])
+        cell = source_cells.get(record["column"])
+        if cell is None:
+            continue
+        current_token = _cell_value_token_index(source, cell)
+        current = "" if current_token is None else source.tokens[current_token].value
+        if base_token is not None:
+            owned.add(base_token)
+        if merged == current:
+            continue
+        if merged == "":
+            if current_token is None:
+                continue
+            container = _cell_value_container(source, cell)
+            if container is not None:
+                ranges[(container.start, container.end)] = "{1,0}"
+            continue
+        escaped = merged.replace(chr(34), chr(34) * 2)
+        if current_token is None:
+            container = _empty_value_container(source, cell)
+            if container is not None:
+                ranges[(container.start, container.end)] = f'{{1,1,{{"#","{escaped}"}}}}'
+        else:
+            ranges[(current_token, current_token + 1)] = f'"{escaped}"'
+    return ranges, owned, unresolved
+
+
+def _aligned_row_cells(
+    base: MxlDocument, local: MxlDocument, remote: MxlDocument
+) -> list[dict[str, object]] | None:
+    """Per-column view of the rows Base shares with both sides.
+
+    A cell is only visible to the value merge when Base holds a value for it, so
+    a cell a side cleared, or one both sides filled where Base had nothing, used
+    to leave no trace at all. Reporting a side's cell as ``None`` when its row is
+    missing keeps those row-level differences out of it — the row conflict
+    already covers them.
+    """
+
+    documents = {"base": base, "local": local, "remote": remote}
+    layouts = {name: _row_layout(document) for name, document in documents.items()}
+    if any(layout is None or layout.kind != "records" for layout in layouts.values()):
+        return None
+    base_layout = layouts["base"]
+    assert base_layout is not None
+    alignments = {
+        name: _align_rows(base_layout, layouts[name])  # type: ignore[arg-type]
+        for name in ("local", "remote")
+    }
+
+    records: list[dict[str, object]] = []
+    for base_index, base_row in enumerate(base_layout.rows):
+        base_cells = _row_cells(base, base_row)
+        side_cells: dict[str, dict[int, StructureNode] | None] = {}
+        for name in ("local", "remote"):
+            side_index = alignments[name].base_to_side.get(base_index)
+            layout = layouts[name]
+            assert layout is not None
+            side_cells[name] = (
+                None if side_index is None else _row_cells(documents[name], layout.rows[side_index])
+            )
+
+        columns = set(base_cells)
+        for cells in side_cells.values():
+            if cells is not None:
+                columns.update(cells)
+        for column in sorted(columns):
+            record: dict[str, object] = {
+                "base_row": base_index,
+                "column": column,
+                "base_token": _cell_value_token_index(base, base_cells[column])
+                if column in base_cells
+                else None,
+            }
+            for name in ("local", "remote"):
+                cells = side_cells[name]
+                if cells is None or column not in cells:
+                    record[name] = None
+                    record[f"{name}_cell"] = None
+                    continue
+                token = _cell_value_token_index(documents[name], cells[column])
+                record[name] = "" if token is None else documents[name].tokens[token].value
+                record[f"{name}_token"] = token
+                record[f"{name}_cell"] = cells[column]
+            records.append(record)
+    return records
+
+
+def coordinate_entry_map(base: MxlDocument, side: MxlDocument) -> dict[int, int] | None:
+    """Base value index → the side's value index for the same row and column.
+
+    Returns None when the documents carry no usable coordinates, leaving the
+    caller with sequence alignment.
+    """
+
+    return _coordinate_entry_map(
+        base, side, semantic_entries(base), semantic_entries(side)
+    )
+
+
+def _entry_map(
+    base: MxlDocument,
+    side: MxlDocument,
+    base_entries: Sequence[tuple[int, str]],
+    side_entries: Sequence[tuple[int, str]],
+) -> dict[int, int]:
+    coordinate_map = _coordinate_entry_map(base, side, base_entries, side_entries)
+    if coordinate_map is not None:
+        return coordinate_map
+    return _align_entry_indexes(
+        [value for _, value in base_entries], [value for _, value in side_entries]
+    )
+
+
 def _row_mode_value_conflicts(
     base: MxlDocument, local: MxlDocument, remote: MxlDocument
 ) -> tuple[dict[str, object], ...]:
     base_entries = semantic_entries(base)
     local_entries = semantic_entries(local)
     remote_entries = semantic_entries(remote)
-    local_map = _align_entry_indexes(
-        [value for _, value in base_entries], [value for _, value in local_entries]
-    )
-    remote_map = _align_entry_indexes(
-        [value for _, value in base_entries], [value for _, value in remote_entries]
-    )
+    local_map = _entry_map(base, local, base_entries, local_entries)
+    remote_map = _entry_map(base, remote, base_entries, remote_entries)
     conflicts: list[dict[str, object]] = []
     for entry_index, (base_token_index, base_value) in enumerate(base_entries):
         local_entry = (
@@ -1011,6 +1331,36 @@ def _row_mode_value_conflicts(
                 "context": _nearby_strings(base.tokens, base_token_index),
             }
         )
+
+    reported = {conflict["token_index"] for conflict in conflicts}
+    for record in _aligned_row_cells(base, local, remote) or []:
+        local_value = record["local"]
+        remote_value = record["remote"]
+        # A side whose row is missing is a row-level difference, not a cell one.
+        if local_value is None or remote_value is None:
+            continue
+        base_token = record["base_token"]
+        base_value = "" if base_token is None else base.tokens[base_token].value
+        if local_value in {base_value, remote_value} or remote_value == base_value:
+            continue
+        if base_token is not None and base_token in reported:
+            continue
+        conflict: dict[str, object] = {
+            "kind": "value",
+            "token_index": base_token,
+            "token_type": "string",
+            "base": base_value,
+            "local": local_value,
+            "remote": remote_value,
+            "context": [],
+        }
+        if base_token is None:
+            # No Base token to key on, so the cell is named by its coordinate.
+            conflict["key"] = f"cell:{record['base_row']}:{record['column']}"
+            conflict["cell"] = {"row": record["base_row"], "column": record["column"]}
+        else:
+            conflict["context"] = _nearby_strings(base.tokens, base_token)
+        conflicts.append(conflict)
     return tuple(conflicts)
 
 
@@ -1261,43 +1611,56 @@ def _row_metadata_sections(
             return None
         properties.append((coordinate, value))
 
-    range_count_index = property_end + 2
-    range_count = _integer_child(document, children[range_count_index])
-    if range_count is None or range_count < 0:
-        return None
-    range_end = range_count_index + 1 + range_count * 2
-    if range_end + 6 >= len(children):
-        return None
-    ranges: list[StructureNode] = []
-    for offset in range(range_count):
-        node = children[range_count_index + 1 + offset * 2]
-        marker = _integer_child(
-            document, children[range_count_index + 2 + offset * 2]
-        )
-        if not isinstance(node, StructureNode) or marker != -1:
+    def sections_from(range_count_index: int) -> dict[str, object] | None:
+        if range_count_index >= len(children):
             return None
-        integers = _direct_integer_tokens(document, node)
-        if len(integers) < 2:
+        range_count = _integer_child(document, children[range_count_index])
+        if range_count is None or range_count < 0:
             return None
-        ranges.append(node)
+        range_end = range_count_index + 1 + range_count * 2
+        if range_end + 6 >= len(children):
+            return None
+        ranges: list[StructureNode] = []
+        for offset in range(range_count):
+            node = children[range_count_index + 1 + offset * 2]
+            marker = _integer_child(
+                document, children[range_count_index + 2 + offset * 2]
+            )
+            if not isinstance(node, StructureNode) or marker != -1:
+                return None
+            integers = _direct_integer_tokens(document, node)
+            if len(integers) < 2:
+                return None
+            ranges.append(node)
 
-    grouping_index = range_end + 3
-    grouping = children[grouping_index]
-    named_areas = children[grouping_index + 3]
-    if not isinstance(grouping, StructureNode) or not isinstance(
-        named_areas, StructureNode
-    ):
-        return None
-    return {
-        "property_count_index": tail + 5,
-        "property_end": property_end,
-        "properties": properties,
-        "range_count_index": range_count_index,
-        "range_end": range_end,
-        "ranges": ranges,
-        "grouping": grouping,
-        "named_areas": named_areas,
-    }
+        grouping_index = range_end + 3
+        grouping = children[grouping_index]
+        named_areas = children[grouping_index + 3]
+        if not isinstance(grouping, StructureNode) or not isinstance(
+            named_areas, StructureNode
+        ):
+            return None
+        return {
+            "property_count_index": tail + 5,
+            "property_end": property_end,
+            "properties": properties,
+            "range_count_index": range_count_index,
+            "range_end": range_end,
+            "ranges": ranges,
+            "grouping": grouping,
+            "named_areas": named_areas,
+        }
+
+    # A non-empty property list is followed by two zero fields before the range
+    # count; a sheet with no row properties has the range count straight after.
+    # Rather than assume which shape a file uses, try both and keep whichever
+    # actually parses: the range pairs and the grouping/named-area nodes behind
+    # them are specific enough that a wrong offset does not validate.
+    for range_count_index in (property_end + 2, property_end):
+        sections = sections_from(range_count_index)
+        if sections is not None:
+            return sections
+    return None
 
 
 def _apply_row_boundary_operations(
@@ -2169,21 +2532,26 @@ def _merge_visible_values_into_source(
     local_entries = semantic_entries(local)
     remote_entries = semantic_entries(remote)
     source_entries = semantic_entries(source)
-    base_values = [value for _, value in base_entries]
-    local_map = _align_entry_indexes(base_values, [value for _, value in local_entries])
-    remote_map = _align_entry_indexes(base_values, [value for _, value in remote_entries])
+    local_map = _entry_map(base, local, base_entries, local_entries)
+    remote_map = _entry_map(base, remote, base_entries, remote_entries)
     # A composed row structure supplies an exact Base → source mapping; only a
-    # real source document needs the heuristic value alignment.
+    # real source document needs the alignment.
     source_map = (
         dict(source_map_override)
         if source_map_override is not None
-        else _align_entry_indexes(base_values, [value for _, value in source_entries])
+        else _entry_map(base, source, base_entries, source_entries)
     )
     replacements: dict[int, str] = {}
     unresolved: list[dict[str, object]] = []
+    # Cells the loop below cannot express are decided first, so it can leave the
+    # ones this pass owns alone instead of writing over them.
+    cell_ranges, cell_owned, cell_unresolved = _cell_level_updates(
+        base, local, remote, source, resolutions
+    )
+    unresolved.extend(cell_unresolved)
 
     for entry_index, (base_token_index, base_value) in enumerate(base_entries):
-        if entry_index not in source_map:
+        if entry_index not in source_map or base_token_index in cell_owned:
             continue
         source_token_index = source_entries[source_map[entry_index]][0]
         local_entry = local_entries[local_map[entry_index]] if entry_index in local_map else None
@@ -2246,6 +2614,12 @@ def _merge_visible_values_into_source(
             f"{len(unresolved)} MXL conflict(s) have not been resolved",
             tuple(unresolved),
         )
+    ranges: dict[tuple[int, int], str] = {
+        (token_index, token_index + 1): text
+        for token_index, text in replacements.items()
+    }
+    ranges.update(cell_ranges)
+
     structure_reason = (
         "Composed the selected mixed row structure"
         if source.path == "<mixed-row-structure>"
@@ -2253,8 +2627,8 @@ def _merge_visible_values_into_source(
     )
     return MergeResult(
         True,
-        _replace_tokens(source, replacements),
-        f"{structure_reason} and merged {len(replacements)} visible value change(s)",
+        _replace_token_ranges(source, ranges),
+        f"{structure_reason} and merged {len(ranges)} visible value change(s)",
     )
 
 
