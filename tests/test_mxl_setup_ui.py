@@ -14,6 +14,7 @@ from mxl_setup import Discovery, OnecCandidate
 from mxl_setup_ui import (
     MANUAL_PATH,
     DropdownOption,
+    _make_installer,
     _require_existing,
     _verify_git_attributes,
     build_setup_form,
@@ -221,6 +222,27 @@ class RunSetupTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("LOCALAPPDATA", reported.call_args.args[0])
         self.assertTrue(reported.call_args.kwargs["error"])
+
+    def test_installer_registers_start_menu_shortcuts(self) -> None:
+        environment = mock.Mock()
+        environment.roaming_app_data.return_value = PureWindowsPath(
+            r"C:\Users\dev\AppData\Roaming"
+        )
+        target = Path("installed")
+        installer = _make_installer(target, environment)
+
+        with mock.patch("mxl_tool.install_git_config", return_value=0), mock.patch(
+            "mxl_setup.register_windows_integration"
+        ), mock.patch("mxl_setup.register_start_menu") as register_start, mock.patch(
+            "mxl_setup.WindowsRegistryWriter"
+        ), mock.patch("mxl_setup.WindowsShortcutWriter"):
+            summary = installer(None, None)
+
+        self.assertEqual(register_start.call_count, 1)
+        self.assertEqual(
+            register_start.call_args.args[2], target / "MXL merge tool.exe"
+        )
+        self.assertIn("Ярлыки добавлены в меню «Пуск»", summary)
 
 
 class RunRepoSetupTests(unittest.TestCase):

@@ -22,8 +22,18 @@ APP_VERSION = "0.3.0"
 _VERSION_PATTERN = re.compile(r"^\d+(?:\.\d+)*$")
 
 _MB_OK = 0x0
+_MB_YESNO = 0x4
 _MB_ICONERROR = 0x10
+_MB_ICONWARNING = 0x30
 _MB_ICONINFORMATION = 0x40
+_MB_DEFBUTTON2 = 0x100
+_IDYES = 6
+
+_SHCNE_RENAMEITEM = 0x00000001
+_SHCNE_RMDIR = 0x00000010
+_SHCNE_UPDATEDIR = 0x00001000
+_SHCNF_PATHW = 0x0005
+_SHCNF_FLUSH = 0x1000
 
 
 def report(message: str, title: str = "MXL merge tool", error: bool = False) -> None:
@@ -48,6 +58,61 @@ def report(message: str, title: str = "MXL merge tool", error: bool = False) -> 
     stream = sys.stderr if error else sys.stdout
     if stream is not None:
         print(f"{title}: {message}", file=stream)
+
+
+def confirm_uninstall() -> bool:
+    """Ask before destructive cleanup; No is the safe default button."""
+
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+
+        result = ctypes.windll.user32.MessageBoxW(  # type: ignore[attr-defined]
+            None,
+            "Удалить MXL Merge Tool?\n\n"
+            "Будут удалены настройки Git, ярлыки и файлы программы. "
+            "Файлы .gitattributes в ваших репозиториях останутся без изменений.",
+            "Удаление MXL Merge Tool",
+            _MB_YESNO | _MB_ICONWARNING | _MB_DEFBUTTON2,
+        )
+        return result == _IDYES
+    except Exception:
+        # Under pythonw.exe there is no console fallback. If confirmation
+        # cannot be shown, refusing to delete is safer than silently
+        # proceeding with a destructive operation.
+        return False
+
+
+def notify_shell_change(
+    event: int, path: Path, destination: Path | None = None
+) -> None:
+    """Synchronously tell Explorer about a Start-menu rename or removal."""
+
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        notify = ctypes.windll.shell32.SHChangeNotify  # type: ignore[attr-defined]
+        notify.argtypes = [
+            ctypes.c_long,
+            ctypes.c_uint,
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+        ]
+        notify.restype = None
+        notify(
+            event,
+            _SHCNF_PATHW | _SHCNF_FLUSH,
+            str(path),
+            str(destination) if destination is not None else None,
+        )
+    except Exception:
+        # The shortcut itself is already correct on disk. Shell notification
+        # is cache synchronisation, so its failure must not roll back an
+        # otherwise usable installation.
+        return
 
 
 @dataclass(frozen=True)
@@ -91,6 +156,8 @@ class Environment(Protocol):
     def program_files(self) -> Sequence[PurePath]: ...
 
     def local_app_data(self) -> PurePath: ...
+
+    def roaming_app_data(self) -> PurePath: ...
 
     def exists(self, path: PurePath) -> bool: ...
 
@@ -168,7 +235,14 @@ def discover(env: Environment) -> Discovery:
 
 
 LAUNCHER_NAME = "MXL merge tool.exe"
+SETTINGS_LAUNCHER_NAME = "MXL Merge Tool Settings.exe"
+MAINTENANCE_LAUNCHER_NAME = "MXL Merge Tool Maintenance.exe"
 PAYLOAD_ENTRIES = ("runtime", "app", LAUNCHER_NAME, "README.txt")
+START_MENU_FOLDER_NAME = "MXL Merge Tool"
+SETUP_SHORTCUT_NAME = "Настройка MXL Merge Tool.lnk"
+UNINSTALL_SHORTCUT_NAME = "Удаление MXL Merge Tool.lnk"
+SETTINGS_APP_USER_MODEL_ID = "MxlMergeTool.Desktop.Settings"
+MAINTENANCE_APP_USER_MODEL_ID = "MxlMergeTool.Desktop.Maintenance"
 
 
 def install_root(env: Environment) -> PurePath:
@@ -181,6 +255,19 @@ def install_dir(env: Environment) -> PurePath:
 
 def launcher_path(env: Environment) -> PurePath:
     return install_dir(env) / LAUNCHER_NAME
+
+
+def start_menu_dir(env: Environment) -> PurePath:
+    """Per-user Start-menu folder; creating it never needs elevation."""
+
+    return (
+        env.roaming_app_data()
+        / "Microsoft"
+        / "Windows"
+        / "Start Menu"
+        / "Programs"
+        / START_MENU_FOLDER_NAME
+    )
 
 
 def prune_old_versions(root: Path, keep: str = APP_VERSION) -> tuple[str, ...]:
@@ -234,7 +321,15 @@ def copy_payload(source: Path, target: Path) -> Path:
             shutil.copytree(origin, destination)
         else:
             shutil.copy2(origin, destination)
-    return target / LAUNCHER_NAME
+    launcher = target / LAUNCHER_NAME
+    if launcher.exists():
+        # Windows 11 collapses Start-menu shortcuts that target the same
+        # executable, even when their arguments differ. Two byte-identical
+        # launcher aliases give Settings and Maintenance stable, distinct
+        # Shell identities while keeping all dispatch logic in one binary.
+        for alias in (SETTINGS_LAUNCHER_NAME, MAINTENANCE_LAUNCHER_NAME):
+            shutil.copy2(launcher, target / alias)
+    return launcher
 
 
 class WindowsEnvironment:
@@ -256,6 +351,14 @@ class WindowsEnvironment:
         value = os.environ.get("LOCALAPPDATA")
         if not value:
             raise RuntimeError("LOCALAPPDATA is not set; cannot locate the install directory")
+        return Path(value)
+
+    def roaming_app_data(self) -> PurePath:
+        import os
+
+        value = os.environ.get("APPDATA")
+        if not value:
+            raise RuntimeError("APPDATA is not set; cannot locate the Start menu")
         return Path(value)
 
     def exists(self, path: PurePath) -> bool:
@@ -379,6 +482,347 @@ def unregister_windows_integration(writer: RegistryWriter) -> tuple[str, ...]:
         if not writer.delete_tree(key):
             surviving.append(key)
     return tuple(surviving)
+
+
+@dataclass(frozen=True)
+class Shortcut:
+    path: Path
+    target: Path
+    arguments: str
+    icon: Path
+    working_directory: Path
+    description: str
+    app_user_model_id: str
+
+
+class ShortcutWriter(Protocol):
+    """Creates and removes per-user Windows Start-menu shortcuts."""
+
+    def create(self, shortcut: Shortcut) -> None: ...
+
+    def delete_directory(self, path: Path) -> bool: ...
+
+
+def start_menu_shortcuts(
+    directory: Path, launcher: Path, icon: Path
+) -> tuple[Shortcut, Shortcut]:
+    settings_launcher = launcher.with_name(SETTINGS_LAUNCHER_NAME)
+    maintenance_launcher = launcher.with_name(MAINTENANCE_LAUNCHER_NAME)
+    return (
+        Shortcut(
+            path=directory / SETUP_SHORTCUT_NAME,
+            target=settings_launcher,
+            arguments="setup-gui --installed",
+            icon=icon,
+            working_directory=settings_launcher.parent,
+            description="Настройка MXL Merge Tool",
+            app_user_model_id=SETTINGS_APP_USER_MODEL_ID,
+        ),
+        Shortcut(
+            path=directory / UNINSTALL_SHORTCUT_NAME,
+            target=maintenance_launcher,
+            arguments="uninstall",
+            icon=icon,
+            working_directory=maintenance_launcher.parent,
+            description="Удаление MXL Merge Tool",
+            app_user_model_id=MAINTENANCE_APP_USER_MODEL_ID,
+        ),
+    )
+
+
+def set_shortcut_app_user_model_id(path: Path, app_id: str) -> None:
+    """Write System.AppUserModel.ID into an existing .lnk via Shell COM.
+
+    WScript.Shell can create a shortcut but does not expose its IPropertyStore.
+    Windows 11 otherwise assigns both of our launch modes the same heuristic
+    identity and collapses them into one Start-menu entry. The distribution is
+    amd64-only, so a 24-byte PROPVARIANT buffer matches its native ABI.
+    """
+
+    if sys.platform != "win32":
+        return
+
+    import ctypes
+    import uuid
+
+    class GUID(ctypes.Structure):
+        _fields_ = [
+            ("data1", ctypes.c_uint32),
+            ("data2", ctypes.c_uint16),
+            ("data3", ctypes.c_uint16),
+            ("data4", ctypes.c_ubyte * 8),
+        ]
+
+    class PROPERTYKEY(ctypes.Structure):
+        _fields_ = [("fmtid", GUID), ("pid", ctypes.c_uint32)]
+
+    def guid(value: str) -> GUID:
+        return GUID.from_buffer_copy(uuid.UUID(value).bytes_le)
+
+    hresult = ctypes.c_int32
+    shell_link: ctypes.c_void_p | None = ctypes.c_void_p()
+    persist_file: ctypes.c_void_p | None = ctypes.c_void_p()
+    property_store: ctypes.c_void_p | None = ctypes.c_void_p()
+    must_uninitialize = False
+
+    class PROPVARIANT_VALUE(ctypes.Union):
+        _fields_ = [
+            ("pwsz_val", ctypes.c_wchar_p),
+            ("_storage", ctypes.c_byte * 16),
+        ]
+
+    class PROPVARIANT(ctypes.Structure):
+        _anonymous_ = ("value",)
+        _fields_ = [
+            ("vt", ctypes.c_ushort),
+            ("reserved1", ctypes.c_ushort),
+            ("reserved2", ctypes.c_ushort),
+            ("reserved3", ctypes.c_ushort),
+            ("value", PROPVARIANT_VALUE),
+        ]
+
+    # VT_LPWSTR stores a pointer at offset 8. Keep the Python-owned buffer
+    # alive until SetValue has copied it; this avoids relying on the optional
+    # InitPropVariantFromString export, which is absent on some Windows builds.
+    app_id_buffer = ctypes.create_unicode_buffer(app_id)
+    variant = PROPVARIANT()
+    variant.vt = 31  # VT_LPWSTR
+    variant.pwsz_val = ctypes.cast(app_id_buffer, ctypes.c_wchar_p)
+
+    def check(result: int, operation: str) -> None:
+        if result < 0:
+            code = result & 0xFFFFFFFF
+            raise OSError(f"{operation}: HRESULT 0x{code:08X}")
+
+    def method(
+        interface: ctypes.c_void_p,
+        index: int,
+        result_type: object,
+        *argument_types: object,
+    ) -> object:
+        table = ctypes.cast(
+            interface, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))
+        ).contents
+        prototype = ctypes.WINFUNCTYPE(  # type: ignore[attr-defined]
+            result_type, ctypes.c_void_p, *argument_types
+        )
+        return prototype(table[index])
+
+    ole32 = ctypes.windll.ole32  # type: ignore[attr-defined]
+    clsid_shell_link = guid("00021401-0000-0000-C000-000000000046")
+    iid_shell_link_w = guid("000214F9-0000-0000-C000-000000000046")
+    iid_persist_file = guid("0000010B-0000-0000-C000-000000000046")
+    iid_property_store = guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99")
+    app_id_key = PROPERTYKEY(
+        guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"), 5
+    )
+
+    ole32.CoInitializeEx.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    ole32.CoInitializeEx.restype = hresult
+    initialized = ole32.CoInitializeEx(None, 2)  # COINIT_APARTMENTTHREADED
+    changed_mode = ctypes.c_int32(0x80010106).value
+    if initialized == changed_mode:
+        # COM is already initialised in another mode on this thread; that is
+        # sufficient for the in-process ShellLink object, but must not be
+        # balanced with CoUninitialize by us.
+        initialized = 0
+    else:
+        check(initialized, "CoInitializeEx")
+        must_uninitialize = True
+
+    try:
+        ole32.CoCreateInstance.argtypes = [
+            ctypes.POINTER(GUID),
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.POINTER(GUID),
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        ole32.CoCreateInstance.restype = hresult
+        check(
+            ole32.CoCreateInstance(
+                ctypes.byref(clsid_shell_link),
+                None,
+                1,  # CLSCTX_INPROC_SERVER
+                ctypes.byref(iid_shell_link_w),
+                ctypes.byref(shell_link),
+            ),
+            "CoCreateInstance(CLSID_ShellLink)",
+        )
+
+        query_interface = method(
+            shell_link,
+            0,
+            hresult,
+            ctypes.POINTER(GUID),
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        check(
+            query_interface(
+                shell_link, ctypes.byref(iid_persist_file), ctypes.byref(persist_file)
+            ),
+            "QueryInterface(IPersistFile)",
+        )
+        load = method(
+            persist_file, 5, hresult, ctypes.c_wchar_p, ctypes.c_uint32
+        )
+        check(load(persist_file, str(path), 2), "IPersistFile.Load")
+
+        check(
+            query_interface(
+                shell_link,
+                ctypes.byref(iid_property_store),
+                ctypes.byref(property_store),
+            ),
+            "QueryInterface(IPropertyStore)",
+        )
+
+        set_value = method(
+            property_store,
+            6,
+            hresult,
+            ctypes.POINTER(PROPERTYKEY),
+            ctypes.c_void_p,
+        )
+        check(
+            set_value(
+                property_store, ctypes.byref(app_id_key), ctypes.byref(variant)
+            ),
+            "IPropertyStore.SetValue(System.AppUserModel.ID)",
+        )
+        commit = method(property_store, 7, hresult)
+        check(commit(property_store), "IPropertyStore.Commit")
+
+        save = method(persist_file, 6, hresult, ctypes.c_wchar_p, ctypes.c_int)
+        check(save(persist_file, str(path), 1), "IPersistFile.Save")
+    finally:
+        for interface in (property_store, persist_file, shell_link):
+            if interface and interface.value:
+                release = method(interface, 2, ctypes.c_uint32)
+                release(interface)
+        if must_uninitialize:
+            ole32.CoUninitialize()
+
+
+def register_start_menu(
+    writer: ShortcutWriter, directory: Path, launcher: Path, icon: Path
+) -> None:
+    """Create both product-owned shortcuts, leaving no half-created folder."""
+
+    try:
+        for shortcut in start_menu_shortcuts(directory, launcher, icon):
+            writer.create(shortcut)
+    except Exception:
+        try:
+            writer.delete_directory(directory)
+        except OSError:
+            pass
+        raise
+
+
+def unregister_start_menu(writer: ShortcutWriter, directory: Path) -> tuple[str, ...]:
+    return () if writer.delete_directory(directory) else (str(directory),)
+
+
+_POWERSHELL_SHORTCUT_SCRIPT = """
+$ErrorActionPreference = 'Stop'
+try {
+    $shellType = [type]::GetTypeFromProgID('WScript.Shell')
+    $shell = [Activator]::CreateInstance($shellType)
+    $shortcut = $shell.CreateShortcut($env:MXL_MERGE_SHORTCUT_PATH)
+    $shortcut.TargetPath = $env:MXL_MERGE_SHORTCUT_TARGET
+    $shortcut.Arguments = $env:MXL_MERGE_SHORTCUT_ARGUMENTS
+    $shortcut.IconLocation = $env:MXL_MERGE_SHORTCUT_ICON
+    $shortcut.WorkingDirectory = $env:MXL_MERGE_SHORTCUT_WORKING_DIRECTORY
+    $shortcut.Description = $env:MXL_MERGE_SHORTCUT_DESCRIPTION
+    $shortcut.Save()
+}
+catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+""".strip()
+
+
+class WindowsShortcutWriter:
+    """Create Shell Link files through Windows' built-in WScript COM object."""
+
+    def create(self, shortcut: Shortcut) -> None:
+        import base64
+        import os
+        import tempfile
+
+        shortcut.path.parent.mkdir(parents=True, exist_ok=True)
+        handle, temporary_name = tempfile.mkstemp(
+            prefix="mxl-shortcut-", suffix=".lnk", dir=shortcut.path.parent
+        )
+        os.close(handle)
+        temporary_path = Path(temporary_name)
+        temporary_path.unlink()
+        environment = os.environ.copy()
+        environment.update(
+            {
+                # WScript.Shell on Windows PowerShell 5.1 can fail in Save()
+                # when the .lnk filename contains Cyrillic. Save under a
+                # generated ASCII name first; os.replace below uses Windows'
+                # Unicode filesystem API to give it the requested display
+                # name afterwards.
+                "MXL_MERGE_SHORTCUT_PATH": str(temporary_path),
+                "MXL_MERGE_SHORTCUT_TARGET": str(shortcut.target),
+                "MXL_MERGE_SHORTCUT_ARGUMENTS": shortcut.arguments,
+                "MXL_MERGE_SHORTCUT_ICON": str(shortcut.icon),
+                "MXL_MERGE_SHORTCUT_WORKING_DIRECTORY": str(
+                    shortcut.working_directory
+                ),
+                "MXL_MERGE_SHORTCUT_DESCRIPTION": shortcut.description,
+            }
+        )
+        # powershell.exe treats everything after -Command as source text, not
+        # as one ordinary argv item. Python's Windows argv quoting can therefore
+        # turn a valid multiline script into a parse error. EncodedCommand is
+        # explicitly designed for native-process callers and preserves the
+        # UTF-16 script byte for byte, including its Cyrillic descriptions.
+        encoded_script = base64.b64encode(
+            _POWERSHELL_SHORTCUT_SCRIPT.encode("utf-16-le")
+        ).decode("ascii")
+        try:
+            result = mxl_subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-EncodedCommand",
+                    encoded_script,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=environment,
+            )
+            if result.returncode != 0:
+                details = (result.stderr or result.stdout or "").strip()
+                message = f"Не удалось создать ярлык «{shortcut.path.name}»"
+                if details:
+                    message += f": {details}"
+                raise RuntimeError(message)
+            os.replace(temporary_path, shortcut.path)
+            set_shortcut_app_user_model_id(
+                shortcut.path, shortcut.app_user_model_id
+            )
+            notify_shell_change(_SHCNE_RENAMEITEM, temporary_path, shortcut.path)
+            notify_shell_change(_SHCNE_UPDATEDIR, shortcut.path.parent)
+        finally:
+            temporary_path.unlink(missing_ok=True)
+
+    def delete_directory(self, path: Path) -> bool:
+        existed = path.exists()
+        shutil.rmtree(path, ignore_errors=True)
+        removed = not path.exists()
+        if existed and removed:
+            notify_shell_change(_SHCNE_RMDIR, path)
+            notify_shell_change(_SHCNE_UPDATEDIR, path.parent)
+        return removed
 
 
 GIT_CONFIG_KEYS = (
@@ -539,9 +983,9 @@ def remove_global_attributes(runner: GitRunner) -> tuple[str, ...]:
 class UninstallResult(NamedTuple):
     """What uninstall could not finish.
 
-    failed_keys covers Git configuration keys and registry keys that could
-    not be removed, plus a marker when git itself could not be run at all —
-    genuine failures the user must act on. leftover_paths
+    failed_keys covers Git configuration keys, registry keys and integration
+    paths that could not be removed, plus a marker when git itself could not
+    be run at all — genuine failures the user must act on. leftover_paths
     lists program files that survived rmtree because a running instance
     still held them open; on Windows that is expected, not a failure, so it
     is kept in a separate typed field rather than folded into failed_keys
@@ -591,7 +1035,12 @@ def _schedule_delayed_removal(writer: RegistryWriter, root: Path) -> bool:
 
 
 def uninstall(
-    registry: RegistryWriter, runner: GitRunner, root: Path
+    registry: RegistryWriter,
+    runner: GitRunner,
+    root: Path,
+    *,
+    shortcuts: ShortcutWriter | None = None,
+    start_menu: Path | None = None,
 ) -> UninstallResult:
     """Undo the installation. Returns everything that could not be removed.
 
@@ -613,8 +1062,9 @@ def uninstall(
     that need git, and leftover config keys are inert once the drivers below
     them are gone. Then the registry keys are unregistered
     unconditionally — that is the part the user can see, and the part that
-    must not survive regardless of what happens to Git or the files. Only
-    after that is root removed with rmtree. Anything left over is expected
+    must not survive regardless of what happens to Git or the files. The
+    Start-menu shortcuts are removed alongside those keys. Only after that is
+    root removed with rmtree. Anything left over is expected
     on Windows, not a failure the user must act on: it is scheduled for
     removal at the next sign-in via a HKCU RunOnce entry (no elevation
     needed) and reported informationally rather than as an error.
@@ -624,12 +1074,16 @@ def uninstall(
     """
 
     failed: list[str] = []
+    if (shortcuts is None) != (start_menu is None):
+        raise ValueError("shortcuts and start_menu must be provided together")
     try:
         failed.extend(remove_global_attributes(runner))
         failed.extend(unset_git_config(runner))
     except OSError:
         failed.append(_GIT_UNAVAILABLE)
     failed.extend(unregister_windows_integration(registry))
+    if shortcuts is not None and start_menu is not None:
+        failed.extend(unregister_start_menu(shortcuts, start_menu))
 
     shutil.rmtree(root, ignore_errors=True)
 

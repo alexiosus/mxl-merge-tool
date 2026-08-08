@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import contextlib
 import io
+import sys
 import tempfile
 import unittest
 from pathlib import Path, PurePath, PureWindowsPath
@@ -67,6 +69,9 @@ class FakeEnvironment:
 
     def local_app_data(self) -> PureWindowsPath:
         return PureWindowsPath(r"C:\Users\dev\AppData\Local")
+
+    def roaming_app_data(self) -> PureWindowsPath:
+        return PureWindowsPath(r"C:\Users\dev\AppData\Roaming")
 
     def exists(self, path: PurePath) -> bool:
         return str(path).casefold() in self._files
@@ -147,7 +152,13 @@ class DiscoverTests(unittest.TestCase):
         self.assertIsNone(result.git)
 
 
-from mxl_setup import install_dir, install_root, is_installed_copy, launcher_path
+from mxl_setup import (
+    install_dir,
+    install_root,
+    is_installed_copy,
+    launcher_path,
+    start_menu_dir,
+)
 
 
 class InstallPathTests(unittest.TestCase):
@@ -172,6 +183,13 @@ class InstallPathTests(unittest.TestCase):
             r"C:\Users\dev\AppData\Local\mxl-merge-tool\0.3.0\MXL merge tool.exe",
         )
 
+    def test_start_menu_folder_is_per_user(self) -> None:
+        env = FakeEnvironment(files=set())
+        self.assertEqual(
+            str(start_menu_dir(env)),
+            r"C:\Users\dev\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\MXL Merge Tool",
+        )
+
     def test_recognises_a_copy_already_in_place(self) -> None:
         env = FakeEnvironment(files=set())
         target = PureWindowsPath(r"C:\Users\dev\AppData\Local\mxl-merge-tool\0.3.0")
@@ -188,7 +206,11 @@ class InstallPathTests(unittest.TestCase):
         self.assertTrue(is_installed_copy(env, target))
 
 
-from mxl_setup import copy_payload
+from mxl_setup import (
+    MAINTENANCE_LAUNCHER_NAME,
+    SETTINGS_LAUNCHER_NAME,
+    copy_payload,
+)
 
 
 class CopyPayloadTests(unittest.TestCase):
@@ -212,6 +234,12 @@ class CopyPayloadTests(unittest.TestCase):
             self.assertTrue((target / "runtime" / "python.exe").exists())
             self.assertTrue((target / "app" / "mxl_tool.py").exists())
             self.assertTrue((target / "MXL merge tool.exe").exists())
+            self.assertEqual(
+                (target / SETTINGS_LAUNCHER_NAME).read_bytes(), b"launcher"
+            )
+            self.assertEqual(
+                (target / MAINTENANCE_LAUNCHER_NAME).read_bytes(), b"launcher"
+            )
             self.assertFalse((target / "stray.log").exists())
 
     def test_returns_the_installed_launcher_path(self) -> None:
@@ -245,11 +273,21 @@ class CopyPayloadTests(unittest.TestCase):
 from mxl_setup import (
     MENU_BACKGROUND_KEY,
     MENU_KEY,
+    MAINTENANCE_APP_USER_MODEL_ID,
+    SETUP_SHORTCUT_NAME,
+    SETTINGS_APP_USER_MODEL_ID,
     UNINSTALL_KEY,
+    UNINSTALL_SHORTCUT_NAME,
+    Shortcut,
+    WindowsShortcutWriter,
     menu_values,
+    notify_shell_change,
+    register_start_menu,
     register_windows_integration,
+    start_menu_shortcuts,
     uninstall_flags,
     uninstall_values,
+    unregister_start_menu,
     unregister_windows_integration,
 )
 
@@ -284,6 +322,26 @@ LAUNCHER = PureWindowsPath(
     r"C:\Users\dev\AppData\Local\mxl-merge-tool\0.3.0\MXL merge tool.exe"
 )
 ICON = PureWindowsPath(r"C:\Users\dev\AppData\Local\mxl-merge-tool\0.3.0\app\mxl.ico")
+START_MENU = Path("start-menu") / "MXL Merge Tool"
+
+
+class FakeShortcutWriter:
+    def __init__(
+        self, delete_ok: bool = True, fail_on_create: int | None = None
+    ) -> None:
+        self.created: list[Shortcut] = []
+        self.deleted: list[Path] = []
+        self.delete_ok = delete_ok
+        self.fail_on_create = fail_on_create
+
+    def create(self, shortcut: Shortcut) -> None:
+        if self.fail_on_create == len(self.created):
+            raise OSError("shortcut failed")
+        self.created.append(shortcut)
+
+    def delete_directory(self, path: Path) -> bool:
+        self.deleted.append(path)
+        return self.delete_ok
 
 
 class MenuValuesTests(unittest.TestCase):
@@ -356,6 +414,130 @@ class RegisterIntegrationTests(unittest.TestCase):
         self.assertIn(MENU_KEY, registry.deleted)
         self.assertIn(MENU_BACKGROUND_KEY, registry.deleted)
         self.assertIn(UNINSTALL_KEY, registry.deleted)
+
+
+class StartMenuTests(unittest.TestCase):
+    def test_creates_setup_and_uninstall_shortcuts(self) -> None:
+        shortcuts = start_menu_shortcuts(START_MENU, Path(LAUNCHER), Path(ICON))
+
+        self.assertEqual(
+            [item.path.name for item in shortcuts],
+            [SETUP_SHORTCUT_NAME, UNINSTALL_SHORTCUT_NAME],
+        )
+        self.assertEqual(shortcuts[0].arguments, "setup-gui --installed")
+        self.assertEqual(shortcuts[1].arguments, "uninstall")
+        self.assertEqual(shortcuts[0].target.name, SETTINGS_LAUNCHER_NAME)
+        self.assertEqual(shortcuts[1].target.name, MAINTENANCE_LAUNCHER_NAME)
+        self.assertNotEqual(shortcuts[0].target, shortcuts[1].target)
+        self.assertEqual(
+            shortcuts[0].app_user_model_id, SETTINGS_APP_USER_MODEL_ID
+        )
+        self.assertEqual(
+            shortcuts[1].app_user_model_id, MAINTENANCE_APP_USER_MODEL_ID
+        )
+        self.assertNotEqual(
+            shortcuts[0].app_user_model_id, shortcuts[1].app_user_model_id
+        )
+        self.assertTrue(all(item.icon == Path(ICON) for item in shortcuts))
+
+    def test_register_writes_both_shortcuts(self) -> None:
+        writer = FakeShortcutWriter()
+        register_start_menu(writer, START_MENU, Path(LAUNCHER), Path(ICON))
+        self.assertEqual(len(writer.created), 2)
+
+    def test_partial_registration_is_cleaned_up(self) -> None:
+        writer = FakeShortcutWriter(fail_on_create=1)
+        with self.assertRaisesRegex(OSError, "shortcut failed"):
+            register_start_menu(writer, START_MENU, Path(LAUNCHER), Path(ICON))
+        self.assertEqual(writer.deleted, [START_MENU])
+
+    def test_unregister_reports_a_folder_that_survived(self) -> None:
+        writer = FakeShortcutWriter(delete_ok=False)
+        self.assertEqual(
+            unregister_start_menu(writer, START_MENU), (str(START_MENU),)
+        )
+
+    def test_real_writer_passes_values_without_powershell_quoting(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, mock.patch(
+            "mxl_setup.mxl_subprocess.run"
+        ) as run, mock.patch(
+            "mxl_setup.set_shortcut_app_user_model_id"
+        ) as set_app_id, mock.patch("mxl_setup.notify_shell_change") as notify:
+            shortcut = Shortcut(
+                path=Path(raw) / SETUP_SHORTCUT_NAME,
+                target=Path(LAUNCHER),
+                arguments="setup-gui --installed",
+                icon=Path(ICON),
+                working_directory=Path(LAUNCHER).parent,
+                description="Настройка MXL Merge Tool",
+                app_user_model_id=SETTINGS_APP_USER_MODEL_ID,
+            )
+
+            def save_temporary_link(*_args: object, **kwargs: object) -> object:
+                environment = kwargs["env"]
+                assert isinstance(environment, dict)
+                Path(environment["MXL_MERGE_SHORTCUT_PATH"]).write_bytes(b"link")
+                return mock.Mock(returncode=0, stdout="", stderr="")
+
+            run.side_effect = save_temporary_link
+            WindowsShortcutWriter().create(shortcut)
+            saved_link = shortcut.path.read_bytes()
+
+        command = run.call_args.args[0]
+        environment = run.call_args.kwargs["env"]
+        self.assertEqual(command[0], "powershell.exe")
+        self.assertIn("-EncodedCommand", command)
+        encoded = command[command.index("-EncodedCommand") + 1]
+        self.assertEqual(
+            base64.b64decode(encoded).decode("utf-16-le"),
+            mxl_setup._POWERSHELL_SHORTCUT_SCRIPT,
+        )
+        temporary_path = Path(environment["MXL_MERGE_SHORTCUT_PATH"])
+        self.assertTrue(temporary_path.name.startswith("mxl-shortcut-"))
+        self.assertNotIn("Настройка", temporary_path.name)
+        self.assertEqual(saved_link, b"link")
+        self.assertEqual(environment["MXL_MERGE_SHORTCUT_TARGET"], str(shortcut.target))
+        self.assertEqual(
+            environment["MXL_MERGE_SHORTCUT_ARGUMENTS"], "setup-gui --installed"
+        )
+        self.assertEqual(notify.call_count, 2)
+        self.assertEqual(notify.call_args_list[0].args[2], shortcut.path)
+        set_app_id.assert_called_once_with(
+            shortcut.path, SETTINGS_APP_USER_MODEL_ID
+        )
+
+    def test_real_writer_notifies_shell_when_folder_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, mock.patch(
+            "mxl_setup.notify_shell_change"
+        ) as notify:
+            directory = Path(raw) / "MXL Merge Tool"
+            directory.mkdir()
+            (directory / "shortcut.lnk").write_bytes(b"link")
+
+            self.assertTrue(WindowsShortcutWriter().delete_directory(directory))
+
+        self.assertEqual(notify.call_count, 2)
+        self.assertEqual(notify.call_args_list[0].args[1], directory)
+
+    def test_real_writer_surfaces_powershell_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as raw, mock.patch(
+            "mxl_setup.mxl_subprocess.run"
+        ) as run:
+            run.return_value.returncode = 1
+            run.return_value.stderr = "COM-компонент недоступен"
+            shortcut = Shortcut(
+                path=Path(raw) / SETUP_SHORTCUT_NAME,
+                target=Path(LAUNCHER),
+                arguments="setup-gui --installed",
+                icon=Path(ICON),
+                working_directory=Path(LAUNCHER).parent,
+                description="Настройка MXL Merge Tool",
+                app_user_model_id=SETTINGS_APP_USER_MODEL_ID,
+            )
+            with self.assertRaisesRegex(
+                RuntimeError, "COM-компонент недоступен"
+            ):
+                WindowsShortcutWriter().create(shortcut)
 
 
 from mxl_setup import GIT_CONFIG_KEYS, unset_git_config
@@ -582,6 +764,37 @@ class UninstallTests(unittest.TestCase):
             self.assertEqual(len(runner.calls), len(GIT_CONFIG_KEYS))
             self.assertEqual(result, UninstallResult())
 
+    def test_removes_start_menu_shortcuts(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "mxl-merge-tool"
+            root.mkdir()
+            start_menu = Path(raw) / "Start Menu" / "MXL Merge Tool"
+            shortcuts = FakeShortcutWriter()
+
+            result = uninstall(
+                FakeRegistry(),
+                FakeGitRunner(),
+                root,
+                shortcuts=shortcuts,
+                start_menu=start_menu,
+            )
+
+            self.assertEqual(shortcuts.deleted, [start_menu])
+            self.assertEqual(result, UninstallResult())
+
+    def test_reports_start_menu_folder_that_could_not_be_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            start_menu = Path(raw) / "Start Menu" / "MXL Merge Tool"
+            result = uninstall(
+                FakeRegistry(),
+                FakeGitRunner(),
+                Path(raw) / "absent",
+                shortcuts=FakeShortcutWriter(delete_ok=False),
+                start_menu=start_menu,
+            )
+
+        self.assertIn(str(start_menu), result.failed_keys)
+
     def test_missing_directory_is_not_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw) / "absent"
@@ -756,7 +969,7 @@ class UninstallTests(unittest.TestCase):
             self.assertTrue(result.failed_keys)
 
 
-from mxl_setup import report
+from mxl_setup import confirm_uninstall, report
 
 
 class ReportTests(unittest.TestCase):
@@ -779,6 +992,46 @@ class ReportTests(unittest.TestCase):
         ):
             report("никуда")
             report("никуда", error=True)
+
+
+class ConfirmUninstallTests(unittest.TestCase):
+    def _answer(self, result: int) -> tuple[bool, mock.Mock]:
+        ctypes = mock.Mock()
+        ctypes.windll.user32.MessageBoxW.return_value = result
+        with mock.patch.object(mxl_setup.sys, "platform", "win32"), mock.patch.dict(
+            sys.modules, {"ctypes": ctypes}
+        ):
+            answer = confirm_uninstall()
+        return answer, ctypes.windll.user32.MessageBoxW
+
+    def test_yes_allows_uninstall(self) -> None:
+        answer, message_box = self._answer(6)
+        self.assertTrue(answer)
+        self.assertIn("Удалить MXL Merge Tool?", message_box.call_args.args[1])
+
+    def test_no_cancels_uninstall(self) -> None:
+        answer, _ = self._answer(7)
+        self.assertFalse(answer)
+
+    def test_no_is_the_default_button(self) -> None:
+        _, message_box = self._answer(7)
+        flags = message_box.call_args.args[3]
+        self.assertTrue(flags & 0x100)
+
+
+class ShellNotificationTests(unittest.TestCase):
+    def test_rename_event_passes_both_unicode_paths_and_flushes(self) -> None:
+        ctypes = mock.Mock()
+        with mock.patch.object(mxl_setup.sys, "platform", "win32"), mock.patch.dict(
+            sys.modules, {"ctypes": ctypes}
+        ):
+            notify_shell_change(1, Path("Старый.lnk"), Path("Новый.lnk"))
+
+        call = ctypes.windll.shell32.SHChangeNotify.call_args
+        self.assertEqual(call.args[0], 1)
+        self.assertEqual(call.args[2], "Старый.lnk")
+        self.assertEqual(call.args[3], "Новый.lnk")
+        self.assertTrue(call.args[1] & 0x1000)
 
 
 class PruneOldVersionsTests(unittest.TestCase):

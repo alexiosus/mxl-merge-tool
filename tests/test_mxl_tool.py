@@ -1532,11 +1532,22 @@ class SetupCommandTests(unittest.TestCase):
         ) as remove:
             with patch("mxl_setup.WindowsRegistryWriter"), patch(
                 "mxl_setup.SubprocessGitRunner"
-            ), patch("mxl_setup.WindowsEnvironment"), patch(
+            ), patch("mxl_setup.WindowsShortcutWriter"), patch(
+                "mxl_setup.WindowsEnvironment"
+            ), patch(
                 "mxl_setup.install_root", return_value="/tmp/mxl-merge-tool"
-            ), patch("mxl_setup.report"):
+            ), patch(
+                "mxl_setup.start_menu_dir", return_value="/tmp/start-menu/MXL Merge Tool"
+            ), patch("mxl_setup.confirm_uninstall", return_value=True), patch(
+                "mxl_setup.report"
+            ) as reported:
                 self.assertEqual(mxl_tool.main(["uninstall"]), 0)
         self.assertEqual(remove.call_count, 1)
+        reported.assert_called_once_with("MXL Merge Tool успешно удалён.")
+        self.assertEqual(
+            remove.call_args.kwargs["start_menu"],
+            Path("/tmp/start-menu/MXL Merge Tool"),
+        )
 
     def test_uninstall_reports_failed_keys(self) -> None:
         with patch(
@@ -1545,10 +1556,23 @@ class SetupCommandTests(unittest.TestCase):
         ):
             with patch("mxl_setup.WindowsRegistryWriter"), patch(
                 "mxl_setup.SubprocessGitRunner"
-            ), patch("mxl_setup.WindowsEnvironment"), patch(
+            ), patch("mxl_setup.WindowsShortcutWriter"), patch(
+                "mxl_setup.WindowsEnvironment"
+            ), patch(
                 "mxl_setup.install_root", return_value="/tmp/mxl-merge-tool"
-            ), patch("mxl_setup.report"):
+            ), patch(
+                "mxl_setup.start_menu_dir", return_value="/tmp/start-menu/MXL Merge Tool"
+            ), patch("mxl_setup.confirm_uninstall", return_value=True), patch(
+                "mxl_setup.report"
+            ):
                 self.assertEqual(mxl_tool.main(["uninstall"]), 2)
+
+    def test_uninstall_cancelled_by_user_does_nothing(self) -> None:
+        with patch("mxl_setup.confirm_uninstall", return_value=False), patch(
+            "mxl_setup.uninstall"
+        ) as remove:
+            self.assertEqual(mxl_tool.main(["uninstall"]), 0)
+        self.assertFalse(remove.called)
 
 
 if __name__ == "__main__":

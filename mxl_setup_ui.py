@@ -173,7 +173,7 @@ def _require_existing(label: str, value: str | None) -> None:
         raise RuntimeError(f"{label} не найден: {value}")
 
 
-def _make_installer(target: Path) -> Any:
+def _make_installer(target: Path, environment: mxl_setup.Environment) -> Any:
     import mxl_tool
 
     def install(onec_client: str | None, onec_file_editor: str | None) -> list[str]:
@@ -195,9 +195,16 @@ def _make_installer(target: Path) -> Any:
             target / mxl_setup.LAUNCHER_NAME,
             target / "app" / "mxl.ico",
         )
+        mxl_setup.register_start_menu(
+            mxl_setup.WindowsShortcutWriter(),
+            Path(mxl_setup.start_menu_dir(environment)),
+            target / mxl_setup.LAUNCHER_NAME,
+            target / "app" / "mxl.ico",
+        )
         summary = [
             "Драйверы diff и merge настроены для всех репозиториев",
             "Пункт контекстного меню зарегистрирован",
+            "Ярлыки добавлены в меню «Пуск»",
             "Добавлена запись в «Программы и компоненты»",
         ]
         if onec_client:
@@ -274,7 +281,7 @@ def _run_setup(source_root: Path, installed: bool) -> int:
         from mxl_setup_gui import run_setup_window  # type: ignore[no-redef]
 
     discovery = mxl_setup.discover(env)
-    run_setup_window(discovery, _make_installer(target), _verify_git_attributes)
+    run_setup_window(discovery, _make_installer(target, env), _verify_git_attributes)
     return 0
 
 

@@ -3697,10 +3697,15 @@ def main(argv: Iterable[str] | None = None) -> int:
             # itself (e.g. WindowsEnvironment.local_app_data() raising before
             # a root directory can even be computed) must still be reported.
             try:
+                if not mxl_setup.confirm_uninstall():
+                    return 0
+                environment = mxl_setup.WindowsEnvironment()
                 result = mxl_setup.uninstall(
                     mxl_setup.WindowsRegistryWriter(),
                     mxl_setup.SubprocessGitRunner(),
-                    Path(mxl_setup.install_root(mxl_setup.WindowsEnvironment())),
+                    Path(mxl_setup.install_root(environment)),
+                    shortcuts=mxl_setup.WindowsShortcutWriter(),
+                    start_menu=Path(mxl_setup.start_menu_dir(environment)),
                 )
             except Exception as error:
                 message = f"{type(error).__name__}: {error}"
@@ -3715,12 +3720,12 @@ def main(argv: Iterable[str] | None = None) -> int:
                 print(f"mxl-tool: {message}", file=sys.stderr)
                 mxl_setup.report(message, error=True)
                 return 2
-            print("MXL Merge Tool удалён.")
+            print("MXL Merge Tool успешно удалён.")
             if not result.leftover_paths:
                 # uninstall() already showed its own informational message
                 # box when files were left behind; a typed field replaces
                 # the old string-prefix convention for telling that apart.
-                mxl_setup.report("MXL Merge Tool удалён.")
+                mxl_setup.report("MXL Merge Tool успешно удалён.")
             return 0
     except (OSError, MxlFormatError, subprocess.CalledProcessError) as error:
         print(f"mxl-tool: {error}", file=sys.stderr)
