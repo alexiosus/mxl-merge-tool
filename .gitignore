@@ -4,3 +4,8 @@ __pycache__/
 
 # local dev notes for cross-machine (Windows 1C) hand-off
 .notes/
+
+# Windows installer build outputs (launcher, bundled runtime, packaged installer)
+build/
+dist/
+.DS_Store

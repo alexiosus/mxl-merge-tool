@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import mxl_setup
 import mxl_tool
 
 from mxl_tool import (
@@ -21,6 +25,7 @@ from mxl_tool import (
     _row_cells,
     _row_layout,
     _row_metadata_sections,
+    _write_textconv,
     atomic_write_bytes,
     driver_report_path,
     install_git_config,
@@ -1340,6 +1345,210 @@ class IndependentMoveGroupTests(unittest.TestCase):
         self.assertEqual(1, len(groups))
         self.assertEqual(1, groups[0]["min_base"])
         self.assertEqual(4, groups[0]["max_base"])
+
+
+class WindowsInterpreterTests(unittest.TestCase):
+    """Git spawns textconv and the driver itself: sys.executable is used as-is.
+
+    An earlier version of this code swapped pythonw.exe for a console
+    python.exe here, reasoning that textconv needs a writable stdout. A
+    reviewer verified that pythonw.exe works fine, because Git redirects the
+    child's stdout to a pipe before starting it; textconv now also writes to
+    file descriptor 1 directly (see TextconvFileDescriptorTests) rather than
+    relying on sys.stdout, which removes the original justification
+    entirely. Keeping a console interpreter here would instead flash a
+    console window on every "git diff" of a .mxl file, since
+    CREATE_NO_WINDOW only helps when this tool is the one calling
+    CreateProcess, which it is not for commands Git spawns itself.
+    """
+
+    def _install_in_temp_repo(self, interpreter: Path) -> dict[str, str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "repo"
+            root.mkdir()
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            previous = Path.cwd()
+            os.chdir(root)
+            try:
+                with patch.object(mxl_tool.sys, "executable", str(interpreter)):
+                    install_git_config()
+                return {
+                    key: subprocess.check_output(
+                        ["git", "config", "--get", key], text=True
+                    ).strip()
+                    for key in (
+                        "diff.mxl.textconv",
+                        "merge.mxl.driver",
+                        "mergetool.mxl.cmd",
+                    )
+                }
+            finally:
+                os.chdir(previous)
+
+    def test_pythonw_is_preserved_for_textconv_and_the_merge_driver(self) -> None:
+        with tempfile.TemporaryDirectory() as runtime:
+            windowless = Path(runtime) / "pythonw.exe"
+            windowless.write_bytes(b"")
+            (Path(runtime) / "python.exe").write_bytes(b"")
+
+            settings = self._install_in_temp_repo(windowless)
+
+        self.assertIn("pythonw.exe", settings["diff.mxl.textconv"])
+        # "python.exe" is not a substring of "pythonw.exe", so this only
+        # passes when the console interpreter was never substituted in.
+        self.assertNotIn("python.exe", settings["diff.mxl.textconv"])
+        self.assertIn("pythonw.exe", settings["merge.mxl.driver"])
+        self.assertNotIn("python.exe", settings["merge.mxl.driver"])
+        self.assertIn("pythonw.exe", settings["mergetool.mxl.cmd"])
+
+
+class TextconvFileDescriptorTests(unittest.TestCase):
+    """textconv writes to fd 1 directly; the bytes must not shift.
+
+    diff.mxl.cachetextconv caches this output keyed on blob content, so any
+    byte-for-byte change here invalidates that cache for every .mxl file in
+    every repository on upgrade. _write_textconv exists so this also works
+    under pythonw.exe, where sys.stdout may not be a usable object; this
+    test proves the switch away from sys.stdout produced the exact same
+    bytes sys.stdout.write(textconv(document)) always did.
+    """
+
+    def test_fd_write_matches_the_textconv_string_encoded_as_utf8(self) -> None:
+        document = parse_document(make_mxl(["Alpha", "Значение", 'A "quoted" value']), "test.mxl")
+
+        # This is the pre-existing code path being guarded: what the old
+        # sys.stdout.write(textconv(document)) call actually produced.
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            sys.stdout.write(textconv(document))
+        expected = buffer.getvalue().encode("utf-8")
+
+        with tempfile.TemporaryDirectory() as directory:
+            captured = Path(directory) / "captured"
+            fd = os.open(str(captured), os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+            try:
+                _write_textconv(document, fd=fd)
+            finally:
+                os.close(fd)
+            actual = captured.read_bytes()
+
+        self.assertTrue(actual)
+        self.assertEqual(expected, actual)
+
+
+class GlobalAttributesProvenanceTests(unittest.TestCase):
+    """Uninstall can only be symmetric if install records what it did."""
+
+    @contextlib.contextmanager
+    def _isolated_git_home(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            config = home / "gitconfig"
+            config.write_text("", encoding="utf-8")
+            with patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(config)}):
+                with patch.object(Path, "home", staticmethod(lambda: home)):
+                    yield home
+
+    def _global(self, key: str) -> str:
+        return subprocess.run(
+            ["git", "config", "--global", "--get", key],
+            check=False,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def test_records_ownership_of_a_file_it_created(self) -> None:
+        with self._isolated_git_home() as home:
+            mxl_tool._install_global_attributes()
+            expected = home / ".mxl-merge" / "gitattributes"
+            self.assertEqual(self._global("mxl.attributesFile"), str(expected))
+            self.assertEqual(self._global("mxl.ownsAttributesFile"), "true")
+            self.assertEqual(self._global("core.attributesFile"), str(expected))
+
+    def test_records_that_a_pre_existing_file_belongs_to_the_user(self) -> None:
+        with self._isolated_git_home() as home:
+            theirs = home / "their-attributes"
+            theirs.write_text("*.txt text\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "config", "--global", "core.attributesFile", str(theirs)],
+                check=True,
+            )
+
+            mxl_tool._install_global_attributes()
+
+            self.assertEqual(self._global("mxl.attributesFile"), str(theirs))
+            self.assertEqual(self._global("mxl.ownsAttributesFile"), "false")
+            self.assertIn(
+                MXL_ATTRIBUTES_LINE, theirs.read_text(encoding="utf-8")
+            )
+
+    def test_reinstall_keeps_ownership_so_uninstall_stays_symmetric(self) -> None:
+        # IMPORTANT B: on a second install core.attributesFile already
+        # points at our own file, so "configured" alone can no longer tell
+        # ownership apart from a user's setting; owns must stay true. The
+        # README has users reinstall on every update, so this is the normal
+        # path, not an edge case. install -> install -> uninstall must be
+        # symmetric with a single install -> uninstall.
+        with self._isolated_git_home() as home:
+            mxl_tool._install_global_attributes()
+            mxl_tool._install_global_attributes()
+            expected = home / ".mxl-merge" / "gitattributes"
+            self.assertEqual(self._global("mxl.attributesFile"), str(expected))
+            self.assertEqual(self._global("mxl.ownsAttributesFile"), "true")
+
+            failed = mxl_setup.remove_global_attributes(mxl_setup.SubprocessGitRunner())
+
+            self.assertEqual(failed, ())
+            self.assertFalse(expected.exists())
+            self.assertEqual(self._global("core.attributesFile"), "")
+
+
+class SetupCommandTests(unittest.TestCase):
+    def test_setup_gui_dispatches_to_run_setup(self) -> None:
+        with patch("mxl_setup_ui.run_setup", return_value=0) as run_setup:
+            self.assertEqual(mxl_tool.main(["setup-gui"]), 0)
+        self.assertEqual(run_setup.call_count, 1)
+
+    def test_setup_gui_defaults_to_deciding_for_itself(self) -> None:
+        with patch("mxl_setup_ui.run_setup", return_value=0) as run_setup:
+            mxl_tool.main(["setup-gui"])
+        self.assertFalse(run_setup.call_args.kwargs["installed"])
+
+    def test_setup_gui_accepts_the_installed_flag(self) -> None:
+        with patch("mxl_setup_ui.run_setup", return_value=0) as run_setup:
+            mxl_tool.main(["setup-gui", "--installed"])
+        self.assertTrue(run_setup.call_args.kwargs["installed"])
+
+    def test_setup_repo_passes_the_directory(self) -> None:
+        with patch("mxl_setup_ui.run_repo_setup", return_value=0) as run_repo:
+            mxl_tool.main(["setup-repo", r"C:\work\project"])
+        self.assertEqual(run_repo.call_args.args[0], r"C:\work\project")
+
+    def test_uninstall_reports_success(self) -> None:
+        # report() would otherwise pop a real message box (or print) during
+        # the suite run; patch it so the test stays quiet.
+        with patch(
+            "mxl_setup.uninstall", return_value=mxl_setup.UninstallResult()
+        ) as remove:
+            with patch("mxl_setup.WindowsRegistryWriter"), patch(
+                "mxl_setup.SubprocessGitRunner"
+            ), patch("mxl_setup.WindowsEnvironment"), patch(
+                "mxl_setup.install_root", return_value="/tmp/mxl-merge-tool"
+            ), patch("mxl_setup.report"):
+                self.assertEqual(mxl_tool.main(["uninstall"]), 0)
+        self.assertEqual(remove.call_count, 1)
+
+    def test_uninstall_reports_failed_keys(self) -> None:
+        with patch(
+            "mxl_setup.uninstall",
+            return_value=mxl_setup.UninstallResult(failed_keys=("merge.mxl.driver",)),
+        ):
+            with patch("mxl_setup.WindowsRegistryWriter"), patch(
+                "mxl_setup.SubprocessGitRunner"
+            ), patch("mxl_setup.WindowsEnvironment"), patch(
+                "mxl_setup.install_root", return_value="/tmp/mxl-merge-tool"
+            ), patch("mxl_setup.report"):
+                self.assertEqual(mxl_tool.main(["uninstall"]), 2)
 
 
 if __name__ == "__main__":

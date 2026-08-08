@@ -42,6 +42,11 @@ except ModuleNotFoundError:
     )
 
 try:
+    from tools.mxl_merge.mxl_html import safe_json_for_script
+except ModuleNotFoundError:
+    from mxl_html import safe_json_for_script  # type: ignore[no-redef]
+
+try:
     from tools.mxl_merge.mxl_tool import (
         MergeResult,
         MxlDocument,
@@ -997,20 +1002,11 @@ class MxlUiRequestHandler(BaseHTTPRequestHandler):
         self._shutdown_after_response()
 
 
-def _safe_json_for_script(value: object) -> str:
-    return (
-        json.dumps(value, ensure_ascii=False)
-        .replace("&", "\\u0026")
-        .replace("<", "\\u003c")
-        .replace(">", "\\u003e")
-    )
-
-
 def render_ui(model: Mapping[str, object], token: str) -> bytes:
     template_path = Path(__file__).with_name("ui.html")
     template = template_path.read_text(encoding="utf-8")
-    html = template.replace("__MXL_MODEL__", _safe_json_for_script(model))
-    html = html.replace("__MXL_TOKEN__", _safe_json_for_script(token))
+    html = template.replace("__MXL_MODEL__", safe_json_for_script(model))
+    html = html.replace("__MXL_TOKEN__", safe_json_for_script(token))
     return html.encode("utf-8")
 
 

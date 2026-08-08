@@ -3011,6 +3011,27 @@ def textconv(document: MxlDocument) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _write_textconv(document: MxlDocument, fd: int = 1) -> None:
+    """Write textconv's output straight to the given file descriptor.
+
+    Defaults to fd 1, the process's real standard output. Going through
+    os.fdopen instead of sys.stdout matters under the Windows launcher: it
+    runs everything via pythonw.exe, a GUI-subsystem interpreter with no
+    console, so sys.stdout may not be the object Python's own startup code
+    expects to build one from. Git redirects the child's stdout to a pipe
+    before starting textconv, and that pipe is what os.fdopen(1, ...) reads
+    directly from the OS handle table, so this works the same way whether
+    the interpreter is python.exe or pythonw.exe. closefd=False leaves the
+    descriptor itself alone; only the wrapper this function created is
+    closed.
+    """
+
+    data = textconv(document).encode("utf-8")
+    with os.fdopen(fd, "wb", closefd=False) as stream:
+        stream.write(data)
+        stream.flush()
+
+
 def atomic_write_bytes(path: str | Path, data: bytes) -> None:
     """Durably replace a file without exposing a partially written result."""
     target = Path(path)
@@ -3138,11 +3159,18 @@ def install_git_config(
     global_install: bool = False,
     onec_file_editor: str | None = None,
 ) -> int:
+    try:
+        from tools.mxl_merge.mxl_subprocess import check_output as _check_output
+        from tools.mxl_merge.mxl_subprocess import run as _run
+    except ModuleNotFoundError:
+        from mxl_subprocess import check_output as _check_output  # type: ignore[no-redef]
+        from mxl_subprocess import run as _run  # type: ignore[no-redef]
+
     root: Path | None = None
     if not global_install:
         try:
             root = Path(
-                subprocess.check_output(
+                _check_output(
                     ["git", "rev-parse", "--show-toplevel"],
                     text=True,
                     stderr=subprocess.PIPE,
@@ -3169,13 +3197,21 @@ def install_git_config(
     else:
         script = str(script_path)
 
-    python_executable = Path(sys.executable).resolve().as_posix()
+    interpreter = Path(sys.executable).resolve()
+    python_executable = interpreter.as_posix()
     if getattr(sys, "frozen", False):
         python_command = f'"{python_executable}"'
     else:
         python_command = f'"{python_executable}" "{script}"'
     # The version is part of Git's textconv cache key. Bump it whenever the
     # canonical output changes so reinstalling cannot reuse stale blob output.
+    # Git spawns textconv and the merge driver itself, so sys.executable is
+    # used as-is: under the Windows launcher that is pythonw.exe, and
+    # CREATE_NO_WINDOW cannot help here since we are not the one calling
+    # CreateProcess. That is safe because Git redirects the child's stdout
+    # to a pipe before starting it, and textconv writes to file descriptor 1
+    # directly rather than through sys.stdout, so it works under pythonw.exe
+    # exactly as it does under python.exe.
     textconv_command = (
         f'{python_command} textconv --format-version {TEXTCONV_FORMAT_VERSION}'
     )
@@ -3197,7 +3233,7 @@ def install_git_config(
         "mergetool.mxl.trustExitCode": "true",
     }
     for key, value in settings.items():
-        subprocess.run(["git", "config", config_scope, key, value], check=True)
+        _run(["git", "config", config_scope, key, value], check=True)
 
     onec_settings = {
         "mxl.onecClient": onec_client,
@@ -3208,9 +3244,9 @@ def install_git_config(
     }
     for key, value in onec_settings.items():
         if value:
-            subprocess.run(["git", "config", config_scope, key, value], check=True)
+            _run(["git", "config", config_scope, key, value], check=True)
 
-    configured_client = onec_client or subprocess.run(
+    configured_client = onec_client or _run(
         ["git", "config", config_scope, "--get", "mxl.onecClient"],
         check=False,
         capture_output=True,
@@ -3218,11 +3254,11 @@ def install_git_config(
     ).stdout.strip()
     if configured_client:
         preview_command = f'{python_command} render-onec {{input}} {{output}}'
-        subprocess.run(
+        _run(
             ["git", "config", config_scope, "mxl.previewCommand", preview_command],
             check=True,
         )
-        configured_epf = onec_epf or subprocess.run(
+        configured_epf = onec_epf or _run(
             ["git", "config", config_scope, "--get", "mxl.onecEpf"],
             check=False,
             capture_output=True,
@@ -3238,7 +3274,7 @@ def install_git_config(
         except ModuleNotFoundError:
             from mxl_onec import epf_supports_batch  # type: ignore[no-redef]
         batch_capable = epf_supports_batch(epf_path, explicit=onec_batch_capable)
-        subprocess.run(
+        _run(
             [
                 "git",
                 "config",
@@ -3250,7 +3286,7 @@ def install_git_config(
         )
         if batch_capable:
             batch_command = f'{python_command} render-onec-batch {{manifest}}'
-            subprocess.run(
+            _run(
                 [
                     "git",
                     "config",
@@ -3261,7 +3297,7 @@ def install_git_config(
                 check=True,
             )
         elif global_install:
-            subprocess.run(
+            _run(
                 [
                     "git",
                     "config",
@@ -3276,7 +3312,7 @@ def install_git_config(
             # (e.g. from a machine-wide install) show through on "git config
             # --get" lookups that don't pin the scope. Set it to empty locally
             # so this repo's disabled batch mode actually masks that fallback.
-            subprocess.run(
+            _run(
                 ["git", "config", config_scope, "mxl.previewBatchCommand", ""],
                 check=True,
             )
@@ -3309,17 +3345,34 @@ def _ensure_attributes_file(path: Path) -> None:
 
 
 def _install_global_attributes() -> Path:
-    configured = subprocess.run(
+    try:
+        from tools.mxl_merge.mxl_subprocess import run as _run
+    except ModuleNotFoundError:
+        from mxl_subprocess import run as _run  # type: ignore[no-redef]
+
+    configured = _run(
         ["git", "config", "--global", "--get", "core.attributesFile"],
         check=False,
         capture_output=True,
         text=True,
     ).stdout.strip()
+    # Read what a previous install recorded before this run overwrites it:
+    # on a reinstall, core.attributesFile already points at our own file, so
+    # "configured" alone can no longer tell ownership apart from a user's
+    # setting. The README has users reinstall on every update, so this is
+    # the normal path, not an edge case.
+    previously_owned = _run(
+        ["git", "config", "--global", "--get", "mxl.ownsAttributesFile"],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).stdout.strip().casefold() == "true"
+    default_path = Path.home() / ".mxl-merge" / "gitattributes"
     if configured:
         attributes_path = Path(os.path.expandvars(configured)).expanduser()
     else:
-        attributes_path = Path.home() / ".mxl-merge" / "gitattributes"
-        subprocess.run(
+        attributes_path = default_path
+        _run(
             [
                 "git",
                 "config",
@@ -3329,7 +3382,25 @@ def _install_global_attributes() -> Path:
             ],
             check=True,
         )
+    owns = (not configured) or previously_owned or (attributes_path == default_path)
     _ensure_attributes_file(attributes_path)
+    # Record what was done so uninstall can undo exactly this much: which file
+    # carries our line, and whether core.attributesFile is ours to remove or
+    # the user's to keep.
+    _run(
+        ["git", "config", "--global", "mxl.attributesFile", str(attributes_path)],
+        check=True,
+    )
+    _run(
+        [
+            "git",
+            "config",
+            "--global",
+            "mxl.ownsAttributesFile",
+            "true" if owns else "false",
+        ],
+        check=True,
+    )
     return attributes_path
 
 
@@ -3435,6 +3506,30 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Install for all repositories; used automatically outside a repository",
     )
+
+    setup_parser = subparsers.add_parser(
+        "setup-gui",
+        help="Open the Windows setup window",
+    )
+    setup_parser.add_argument(
+        "--installed",
+        action="store_true",
+        help=(
+            "Declare that this copy already runs from the install directory; "
+            "passed by the relaunch so path aliases cannot cause a copy loop"
+        ),
+    )
+
+    setup_repo_parser = subparsers.add_parser(
+        "setup-repo",
+        help="Add the MXL attributes to one repository; used by the context menu",
+    )
+    setup_repo_parser.add_argument("directory")
+
+    subparsers.add_parser(
+        "uninstall",
+        help="Remove the global Git configuration, registry keys and program files",
+    )
     return parser
 
 
@@ -3451,7 +3546,7 @@ def main(argv: Iterable[str] | None = None) -> int:
             )
             return 0
         if args.command == "textconv":
-            sys.stdout.write(textconv(load_document(args.file)))
+            _write_textconv(load_document(args.file))
             return 0
         if args.command == "merge":
             report = args.report or f"{args.output}.merge-conflict.json"
@@ -3560,6 +3655,73 @@ def main(argv: Iterable[str] | None = None) -> int:
                 global_install=args.global_install,
                 onec_file_editor=args.onec_file_editor,
             )
+        if args.command == "setup-gui":
+            try:
+                from tools.mxl_merge.mxl_setup_ui import run_setup
+            except ModuleNotFoundError:
+                from mxl_setup_ui import run_setup  # type: ignore[no-redef]
+
+            return run_setup(
+                Path(__file__).resolve().parent.parent,
+                installed=args.installed,
+            )
+        if args.command == "setup-repo":
+            try:
+                from tools.mxl_merge.mxl_setup_ui import run_repo_setup
+            except ModuleNotFoundError:
+                from mxl_setup_ui import run_repo_setup  # type: ignore[no-redef]
+
+            try:
+                from tools.mxl_merge import mxl_setup
+            except ModuleNotFoundError:
+                import mxl_setup  # type: ignore[no-redef]
+
+            # This verb is reached from the Explorer context menu, which runs
+            # under pythonw.exe: with no console, an unreported exception
+            # here is completely invisible to the user.
+            try:
+                return run_repo_setup(args.directory)
+            except Exception as error:
+                message = f"{type(error).__name__}: {error}"
+                print(f"mxl-tool: {message}", file=sys.stderr)
+                mxl_setup.report(message, error=True)
+                return 1
+        if args.command == "uninstall":
+            try:
+                from tools.mxl_merge import mxl_setup
+            except ModuleNotFoundError:
+                import mxl_setup  # type: ignore[no-redef]
+
+            # Same reasoning as setup-repo: uninstall runs under pythonw.exe
+            # via UninstallString, so a failure that never reaches uninstall()
+            # itself (e.g. WindowsEnvironment.local_app_data() raising before
+            # a root directory can even be computed) must still be reported.
+            try:
+                result = mxl_setup.uninstall(
+                    mxl_setup.WindowsRegistryWriter(),
+                    mxl_setup.SubprocessGitRunner(),
+                    Path(mxl_setup.install_root(mxl_setup.WindowsEnvironment())),
+                )
+            except Exception as error:
+                message = f"{type(error).__name__}: {error}"
+                print(f"mxl-tool: {message}", file=sys.stderr)
+                mxl_setup.report(message, error=True)
+                return 1
+
+            if not result.ok:
+                message = "Удаление завершено не полностью: " + ", ".join(
+                    result.failed_keys
+                )
+                print(f"mxl-tool: {message}", file=sys.stderr)
+                mxl_setup.report(message, error=True)
+                return 2
+            print("MXL Merge Tool удалён.")
+            if not result.leftover_paths:
+                # uninstall() already showed its own informational message
+                # box when files were left behind; a typed field replaces
+                # the old string-prefix convention for telling that apart.
+                mxl_setup.report("MXL Merge Tool удалён.")
+            return 0
     except (OSError, MxlFormatError, subprocess.CalledProcessError) as error:
         print(f"mxl-tool: {error}", file=sys.stderr)
         return 2

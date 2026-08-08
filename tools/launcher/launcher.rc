@@ -1,0 +1,32 @@
+// Version fields carry placeholders: tools/build_windows.py substitutes them
+// from mxl_setup.APP_VERSION, the single source of truth. Compiling this file
+// directly, without the build script, leaves them unsubstituted.
+#include <winver.h>
+
+1 ICON "mxl.ico"
+1 24 "launcher.manifest"
+
+1 VERSIONINFO
+FILEVERSION @VERSION_COMMA@
+PRODUCTVERSION @VERSION_COMMA@
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "000004b0"
+    BEGIN
+      VALUE "CompanyName", "MXL Merge Tool"
+      VALUE "FileDescription", "MXL merge tool"
+      VALUE "FileVersion", "@VERSION_DOTTED@"
+      VALUE "InternalName", "mxl-merge-tool"
+      VALUE "OriginalFilename", "MXL merge tool.exe"
+      VALUE "ProductName", "MXL Merge Tool"
+      VALUE "ProductVersion", "@VERSION_DOTTED@"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x0, 1200
+  END
+END
